@@ -1,0 +1,107 @@
+```{r}
+df <- read.csv("hotels-europe_price.csv")
+wd_2017 <- subset(df, year == 2017 & month == 11 & weekend == 0)
+```
+
+```{r}
+hotel_features <- read.csv("hotels-europe_features.csv")
+```
+
+
+```{r}
+enriched <- wd_2017 |>
+  dplyr::right_join(hotel_features, by = "hotel_id")
+head(enriched)
+```
+```{r}
+london_hotels <- enriched |> dplyr::filter(
+  city == "London",
+  !is.na(price),
+  !is.na(distance),
+  !is.na(rating)
+)
+nrow(london_hotels)
+```
+
+```{r}
+med_distance <- median(london_hotels$distance, na.rm = TRUE)
+
+closer <- london_hotels$price[london_hotels$distance < med_distance]
+avg_price_closer <- mean(closer)
+avg_price_closer
+
+farther <- london_hotels$price[london_hotels$distance >= med_distance]
+avg_price_farther <- mean(farther)
+avg_price_farther
+```
+
+```{r}
+percentage <- london_hotels |>
+  dplyr::summarise(p95 = quantile(price, 0.95)) |>
+  dplyr::pull(p95)
+```
+
+```{r}
+plot <- ggplot2::ggplot(london_hotels, ggplot2::aes(x = distance, y = price)) +
+  ggplot2::geom_point(alpha = 0.5, color = "#1f77b4") +
+  ggplot2::geom_smooth(method = "lm", color = "red", se = FALSE) +
+  ggplot2::geom_vline(
+    xintercept = med_distance,
+    linetype = "dashed",
+    color = "darkgreen",
+    linewidth = 1
+  ) +
+  ggplot2::labs(
+    title = "Hotel Price vs. Distance from City Center (Full Range)",
+    subtitle = "Y-axis shows full data range, highlighting price outliers.",
+    x = "Distance from City Center (km)",
+    y = "Price (GBP)"
+  ) +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(plot.title = ggplot2::element_text(face = "bold"))
+```
+
+```{r}
+print(plot)
+```
+
+```{r}
+y_limit_scaled <- percentage * 1.05
+```
+
+```{r}
+plot2 <- ggplot2::ggplot(london_hotels, ggplot2::aes(x = distance, y = price)) +
+  ggplot2::geom_point(alpha = 0.5, color = "#1f77b4") +
+  ggplot2::geom_smooth(method = "lm", color = "red", se = FALSE) +
+  ggplot2::ylim(0, y_limit_scaled) +
+  ggplot2::labs(
+    title = "Hotel Price vs. Distance from City Center (Full Range)",
+    subtitle = "Y-axis shows full data range, highlighting price outliers.",
+    x = "Distance from City Center (km)",
+    y = "Price (GBP)"
+  ) +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(plot.title = ggplot2::element_text(face = "bold"))
+```
+```{r}
+print(plot2)
+```
+
+```{r}
+calc_cor <- function(data, var1, var2) {
+  cor_val <- cor(data[[var1]], data[[var2]], use = "pairwise.complete.obs")
+  cor_val
+}
+```
+
+```{r}
+calc_cor(london_hotels, "price", "rating")
+```
+
+```{r}
+calc_cor(london_hotels, "rating", "distance")
+```
+
+```{r}
+calc_cor(london_hotels, "price", "distance")
+```

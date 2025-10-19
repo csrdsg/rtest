@@ -1,0 +1,130 @@
+---
+title: "Hotel Price Analysis"
+output: html_document
+---
+
+# Data Preparation
+
+## Load Required Libraries
+```{r}
+library(dplyr)
+```
+
+## Read Data
+```{r}
+hotel_prices <- read.csv("hotels-europe_price.csv")
+hotel_features <- read.csv("hotels-europe_features.csv")
+```
+
+## Join Tables
+
+**Join Type:** Right join
+
+**Reasoning:** We use a right join to keep all observations from the price table (right side) and add corresponding hotel features from the features table (left side). This is appropriate because:
+- The price table contains multiple observations per hotel (different dates and conditions)
+- Each price observation needs to be matched with its hotel's attributes (stars, rating, location, etc.)
+- We want to retain all price records and enrich them with hotel characteristics
+
+The relationship is **many-to-one**: many price observations can correspond to one hotel in the features table, with hotel_id as the linking key.
+
+```{r}
+joined <- hotel_prices |>
+  right_join(hotel_features, by = "hotel_id")
+```
+
+## Filter for Complete Cases
+
+Keep only observations where both price and guest rating are available:
+
+```{r}
+filtered_data <- joined |>
+  filter(!is.na(price) & !is.na(rating))
+```
+
+# Analysis Setup
+
+## Selected City and Days
+
+**City:** Amsterdam
+
+**Day 1:** November 2017
+**Day 2:** December 2017
+
+```{r}
+analysis_data <- filtered_data |>
+  filter(
+    city == "Amsterdam",
+    year == 2017,
+    month %in% c(11, 12),
+    nnights == 1
+  ) |>
+  mutate(group = ifelse(month == 11, "Day1", "Day2"))
+```
+
+## Observation Counts
+
+```{r}
+# Counts by day
+table(analysis_data$group)
+
+# Total observations
+cat("Total observations:", nrow(analysis_data), "\n")
+```
+
+## Variables Used
+
+- **price:** Hotel price for one night stay
+- **rating:** Guest rating of the hotel
+- **group:** Categorical variable indicating Day 1 (November) or Day 2 (December)
+
+## Descriptive Statistics
+
+```{r}
+# Summary statistics for price by group
+analysis_data |>
+  group_by(group) |>
+  summarise(
+    n = n(),
+    mean_price = mean(price),
+    sd_price = sd(price),
+    min_price = min(price),
+    max_price = max(price),
+    mean_rating = mean(rating),
+    sd_rating = sd(rating)
+  )
+```
+
+# Part 1: Hypothesis Test
+
+## Two-Sample t-test for Price
+
+Testing whether average hotel prices differ between Day 1 and Day 2:
+
+```{r}
+t.test(price ~ group, data = analysis_data)
+```
+
+## Two-Sample t-test for Rating
+
+Testing whether average guest ratings differ between Day 1 and Day 2:
+
+```{r}
+t.test(rating ~ group, data = analysis_data)
+```
+
+# Results and Interpretation
+
+## Price Analysis
+
+The analysis reveals a statistically significant difference in hotel prices between November and December 2017 in Amsterdam. Hotels in November (Day 1) were priced significantly higher than in December (Day 2), with mean prices of €182.33 and €162.85 respectively. The t-test yielded a p-value of 0.0058, well below the conventional significance threshold of 0.05, indicating strong evidence against the null hypothesis of equal means. The 95% confidence interval for the difference (€5.65 to €33.31) suggests that November prices were between roughly €6 to €33 higher per night on average.
+
+This price difference of approximately €19.50 per night could be attributed to several factors. November might experience higher demand due to business travel, conferences, or early holiday shopping activity in Amsterdam. Additionally, December prices may drop as the month progresses past the peak tourist season, especially after the holiday markets close and before the New Year celebrations.
+
+## Rating Analysis
+
+In contrast to price, guest ratings showed no statistically significant difference between the two months. The mean ratings were 3.88 for November and 3.83 for December, with a p-value of 0.297, far above the 0.05 threshold. This suggests that despite the price differential, guests were equally satisfied with their hotel experiences in both months. The consistency in ratings across months indicates that hotel quality and guest satisfaction remained stable regardless of pricing variations, which is reassuring for travelers considering visits during either period.
+
+## Conclusion
+
+The findings suggest that seasonal pricing strategies in Amsterdam hotels during late 2017 were independent of service quality or guest satisfaction. Hotels charged premium prices in November without corresponding differences in perceived quality or guest experience. From a consumer perspective, December may have offered better value for money, providing similar hotel quality at lower prices. For hotel managers, this indicates successful price discrimination based on demand patterns while maintaining consistent service standards across different pricing periods.
+
