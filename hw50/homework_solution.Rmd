@@ -1,0 +1,306 @@
+---
+title: "Házi feladat - Többváltozós regresszió elemzése"
+author: "Megoldás"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Bevezetés
+
+A házi feladatban a vendégmunkásokkal szembeni bérdiszkriminációt elemezzük többváltozós regresszióval, a múlt heti házi feladatot folytatva. Az elemzés a morg-2014-emp.csv adattáblán alapul.
+
+## Adatok betöltése
+
+```{r load-packages}
+# Szükséges csomagok betöltése
+library(tidyverse)
+library(lmtest)
+library(sandwich)
+
+# Adatok betöltése
+data <- read_csv("morg-2014-emp.csv")
+```
+
+# 1) Órabér és log órabér kiszámítása
+
+```{r calculate-wage}
+data <- data %>%
+  mutate(
+    hourly_wage = earnwke / uhours,
+    ln_wage = log(hourly_wage)
+  )
+
+# Ellenőrzés
+data %>%
+  select(earnwke, uhours, hourly_wage, ln_wage) %>%
+  head(10)
+```
+
+# 2) Native dummy változó létrehozása
+
+Megtartjuk azokat, akik:
+- Külföldön születtek és nem US állampolgárok (Foreign Born, Not a US Citizen), VAGY
+- USA-ban születtek (Native, Born In US)
+
+```{r create-native}
+data_filtered <- data %>%
+  filter(
+    (prcitshp == "Foreign Born, Not a US Citizen") |
+    (prcitshp == "Native, Born In US")
+  ) %>%
+  mutate(
+    native = ifelse(prcitshp == "Native, Born In US", 1, 0)
+  )
+
+# Ellenőrzés
+data_filtered %>%
+  count(prcitshp, native)
+```
+
+# 3) Driver/sales workers and truck drivers szűrés
+
+```{r filter-drivers}
+drivers <- data_filtered %>%
+  filter(occ2012 == 9130)
+
+cat("Mintaméret:", nrow(drivers), "\n")
+```
+
+# 4) Változók táblázata
+
+```{r variables-table}
+# Változók dokumentációja
+variables_info <- data.frame(
+  Változó = c("ln_wage", "native", "age", "sex", "grade92"),
+  Tartalom = c(
+    "Órabér természetes alapú logaritmusa",
+    "1 ha USA-ban született, 0 ha külföldön született nem állampolgár",
+    "Munkavállaló életkora (évek)",
+    "Munkavállaló neme (1=Férfi, 2=Nő)",
+    "Iskolai végzettség kategóriák (31=nincs HS diploma, 39=HS diploma, 40=némi egyetem, 43=BA/BS diploma vagy magasabb)"
+  ),
+  Típus = c("Kvantitatív (folytonos)", "Kvalitatív (bináris)", "Kvantitatív (diszkrét)",
+            "Kvalitatív (bináris)", "Kvalitatív (kategorikus)")
+)
+
+knitr::kable(variables_info, caption = "Használt változók")
+```
+
+## Leíró statisztikák
+
+```{r descriptive-stats}
+# Kvantitatív változók
+drivers %>%
+  select(hourly_wage, ln_wage, age) %>%
+  summary()
+
+# Kvalitatív változók
+drivers %>%
+  count(native) %>%
+  mutate(percentage = round(n / sum(n) * 100, 2))
+
+drivers %>%
+  count(sex) %>%
+  mutate(percentage = round(n / sum(n) * 100, 2))
+
+drivers %>%
+  count(grade92) %>%
+  mutate(percentage = round(n / sum(n) * 100, 2))
+```
+
+# 5) Többváltozós regresszió
+
+A modellben a következő változókat használjuk:
+- **Bal oldal**: ln_wage (log órabér)
+- **Jobb oldal**: native dummy, age, age^2, sex dummy-k, grade92 dummy-k
+
+```{r prepare-variables}
+# Dummy változók létrehozása
+drivers_reg <- drivers %>%
+  mutate(
+    # Életkor négyzete
+    age_sq = age^2,
+    # Nem dummy (férfi=1, nő=0)
+    male = ifelse(sex == 1, 1, 0),
+    # Végzettség dummy-k (referencia: nincs HS diploma, grade92=31)
+    hs_diploma = ifelse(grade92 == 39, 1, 0),
+    some_college = ifelse(grade92 == 40, 1, 0),
+    ba_or_higher = ifelse(grade92 == 43, 1, 0)
+  ) %>%
+  # Csak teljes eseteket tartjuk meg
+  filter(!is.na(ln_wage) & !is.na(native) & !is.na(age) &
+         !is.na(male) & !is.na(grade92))
+```
+
+```{r multivariate-regression}
+# Többváltozós regresszió
+model <- lm(ln_wage ~ native + age + age_sq + male + hs_diploma +
+              some_college + ba_or_higher, data = drivers_reg)
+
+# Eredmények
+summary(model)
+
+# Robusztus standard hibák
+coeftest(model, vcov = vcovHC(model, type = "HC1"))
+```
+
+# 6) Eredmények értelmezése
+
+## R²
+
+```{r r-squared}
+r_squared <- summary(model)$r.squared
+adj_r_squared <- summary(model)$adj.r.squared
+
+cat("R² =", round(r_squared, 4), "\n")
+cat("Korrigált R² =", round(adj_r_squared, 4), "\n")
+```
+
+**Értelmezés**: A modell a log órabérek varianciájának `r round(r_squared * 100, 2)`%-át magyarázza. Ez azt jelenti, hogy a bevont változók (születési státusz, életkor, nem, végzettség) együttesen a bérek változékonyságának kb. `r round(r_squared * 100, 1)`%-áért felelősek.
+
+## Együtthatók értelmezése
+
+```{r coefficients-interpretation}
+coefs <- coef(model)
+robust_se <- sqrt(diag(vcovHC(model, type = "HC1")))
+robust_results <- coeftest(model, vcov = vcovHC(model, type = "HC1"))
+
+# Táblázat
+results_table <- data.frame(
+  Változó = names(coefs),
+  Beta = round(coefs, 4),
+  SE = round(robust_se, 4),
+  t_érték = round(robust_results[, "t value"], 3),
+  p_érték = round(robust_results[, "Pr(>|t|)"], 4),
+  Szignifikáns = ifelse(robust_results[, "Pr(>|t|)"] < 0.001, "***",
+                        ifelse(robust_results[, "Pr(>|t|)"] < 0.01, "**",
+                               ifelse(robust_results[, "Pr(>|t|)"] < 0.05, "*", "")))
+)
+
+knitr::kable(results_table, caption = "Regressziós eredmények (robusztus SE)")
+```
+
+### Fontosabb együtthatók:
+
+- **α (Intercept)**: `r round(coefs[1], 4)` - Ez a log órabér becsült értéke a referenciakategóriában (külföldi születésű, 0 éves, nő, nincs HS diploma). Természetesen ez az érték nem értelmezhető közvetlenül, mivel 0 éves kor nem létezik.
+
+- **native**: `r round(coefs[2], 4)` - Az USA-ban született munkavállalók átlagosan `r round((exp(coefs[2]) - 1) * 100, 2)`%-kal többet keresnek, minden más változó rögzítése mellett. Ez az együttható `r ifelse(robust_results[2, 4] < 0.05, "szignifikáns", "NEM szignifikáns")` (p = `r round(robust_results[2, 4], 4)`).
+
+- **age**: `r round(coefs[3], 4)` - Az életkor pozitív hatása (de lásd age_sq-t is).
+
+- **age_sq**: `r round(coefs[4], 6)` - Az életkor négyzete negatív, ami fordított U alakú kapcsolatot jelez (a bér növekszik az életkorral, de csökkenő ütemben, majd egy pont után csökkenhet).
+
+- **male**: `r round(coefs[5], 4)` - A férfiak átlagosan `r round((exp(coefs[5]) - 1) * 100, 2)`%-kal többet keresnek, mint a nők, minden más változó rögzítése mellett.
+
+- **Végzettség dummy-k**: A magasabb végzettségűek szignifikánsan többet keresnek a referenciacsoporthoz (nincs HS diploma) képest.
+
+# 7) Nemek szerinti különbség a "vendégmunkás-bérhátrány"-ban
+
+A kérdés: Különbözik-e a native bérelőny a nők és férfiak esetében?
+
+**Megoldás**: Interakciós tag bevonása a modellbe (native × male)
+
+```{r interaction-model}
+# Modell interakcióval
+model_interaction <- lm(ln_wage ~ native + age + age_sq + male +
+                          hs_diploma + some_college + ba_or_higher +
+                          native:male, data = drivers_reg)
+
+# Eredmények
+summary(model_interaction)
+
+# Robusztus standard hibák
+coeftest(model_interaction, vcov = vcovHC(model_interaction, type = "HC1"))
+```
+
+## Értelmezés
+
+```{r interaction-interpretation}
+int_coefs <- coef(model_interaction)
+int_robust <- coeftest(model_interaction, vcov = vcovHC(model_interaction, type = "HC1"))
+
+native_effect_women <- int_coefs["native"]
+native_effect_men <- int_coefs["native"] + int_coefs["native:male"]
+interaction_coef <- int_coefs["native:male"]
+interaction_pvalue <- int_robust["native:male", "Pr(>|t|)"]
+
+cat("Native hatás nőknél:", round(native_effect_women, 4), "\n")
+cat("Native hatás férfiaknál:", round(native_effect_men, 4), "\n")
+cat("Interakció együtthatója:", round(interaction_coef, 4), "\n")
+cat("Interakció p-értéke:", round(interaction_pvalue, 4), "\n")
+```
+
+**Eredmény**:
+
+- A nőknél a native bérelőny: `r round((exp(native_effect_women) - 1) * 100, 2)`%
+- A férfiaknál a native bérelőny: `r round((exp(native_effect_men) - 1) * 100, 2)`%
+- Az interakciós tag `r ifelse(interaction_pvalue < 0.05, "szignifikáns", "NEM szignifikáns")` (p = `r round(interaction_pvalue, 4)`)
+
+`r if(interaction_pvalue < 0.05) {"Ez azt jelenti, hogy a vendégmunkás-bérhátrány KÜLÖNBÖZIK a férfiak és nők esetében."} else {"Ez azt jelenti, hogy nincs szignifikáns különbség a vendégmunkás-bérhátrányvban a férfiak és nők között."}`
+
+# 8) Kihagyott változók okozta torzítás
+
+## Két példa kihagyott változókra:
+
+### 1. Nyelvtudás (angol nyelvi készség)
+
+**Miért fontos**: Az angol nyelvtudás befolyásolja a munkavégzés hatékonyságát, kommunikációs képességeket.
+
+**Kapcsolat a native-vel**:
+- `Corr(native, nyelvtudás) > 0` - Az USA-ban születettek átlagosan jobban beszélnek angolul.
+
+**Kapcsolat a bérrel**:
+- A jobb nyelvtudás magasabb bért eredményez, tehát `β_nyelvtudás > 0`
+
+**Torzítás iránya**:
+- Mivel `Corr(native, nyelvtudás) > 0` ÉS `β_nyelvtudás > 0`
+- **Pozitív torzítás** - A native dummy együtthatója TÚLBECSÜLI a valódi hatást
+
+A `β̂_native = β_native + δ * β_nyelvtudás`, ahol δ > 0 és β_nyelvtudás > 0, tehát `β̂_native > β_native`.
+
+### 2. Szakmai tapasztalat minősége
+
+**Miért fontos**: Az USA-ban szerzett tapasztalat értékesebb lehet az amerikai munkaerőpiacon.
+
+**Kapcsolat a native-vel**:
+- `Corr(native, USA_tapasztalat) > 0` - Az USA-ban születettek több USA-beli tapasztalattal rendelkeznek.
+
+**Kapcsolat a bérrel**:
+- A jobb minőségű (USA-beli) tapasztalat magasabb bért eredményez, tehát `β_USA_tapasztalat > 0`
+
+**Torzítás iránya**:
+- Mivel `Corr(native, USA_tapasztalat) > 0` ÉS `β_USA_tapasztalat > 0`
+- **Pozitív torzítás** - A native dummy együtthatója TÚLBECSÜLI a valódi hatást
+
+A `β̂_native = β_native + δ * β_USA_tapasztalat`, ahol δ > 0 és β_USA_tapasztalat > 0, tehát `β̂_native > β_native`.
+
+## Torzítási tábla összefoglalása
+
+```{r omitted-bias-table}
+bias_table <- data.frame(
+  Kihagyott_változó = c("Nyelvtudás (angol)", "USA-beli szakmai tapasztalat"),
+  Corr_native_z = c("Pozitív (+)", "Pozitív (+)"),
+  Beta_z = c("Pozitív (+)", "Pozitív (+)"),
+  Torzítás_iránya = c("Pozitív (felfelé torzít)", "Pozitív (felfelé torzít)"),
+  Következmény = c(
+    "A native hatást túlbecsüljük",
+    "A native hatást túlbecsüljük"
+  )
+)
+
+knitr::kable(bias_table, caption = "Kihagyott változók okozta torzítás")
+```
+
+## Összegzés
+
+Mindkét kihagyott változó esetében **pozitív torzítás** lép fel, ami azt jelenti, hogy a native dummy becsült együtthatója **nagyobb**, mint a valódi oksági hatás. Ezért a megfigyelt bérkülönbség egy része valószínűleg **nem diszkriminációból**, hanem nyelvtudásbeli és tapasztalatbeli különbségekből fakad.
+
+# Összefoglalás
+
+Az elemzés során többváltozós regressziót futtattunk a driver/sales workers and truck drivers foglalkozási kategóriában. A modell szerint az USA-ban született munkavállalók kb. `r round((exp(coefs[2]) - 1) * 100, 1)`%-kal többet keresnek, kontrollálva az életkorra, nemre és végzettségre.
+
+Azonban fontos megjegyezni, hogy számos további változó (nyelvtudás, tapasztalat minősége) kihagyása pozitív torzítást okoz, így a megfigyelt bérkülönbség valószínűleg túlbecsüli a valódi diszkriminációt.

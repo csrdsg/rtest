@@ -1,0 +1,822 @@
+---
+title: "Why is Hungary's Economy Lagging Behind? Structural Analysis"
+author: "Economic Research Team"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    code_folding: hide
+    fig_width: 10
+    fig_height: 6
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = 'center'
+)
+```
+
+# Executive Summary
+
+This analysis investigates the **structural and institutional factors** explaining why Hungary's economic performance lags behind regional peers. While quantitative indicators show the gap, this report explores the underlying causes.
+
+# Setup and Data Loading
+
+```{r libraries}
+# Load required libraries
+library(tidyverse)
+library(wbstats)
+library(knitr)
+library(kableExtra)
+library(plotly)
+library(scales)
+
+# Set theme for plots
+theme_set(theme_minimal(base_size = 12))
+```
+
+```{r define-countries}
+# Define country comparison set
+countries <- c("Hungary", "Poland", "Czech Republic", "Slovakia", "Romania", "Austria")
+country_codes <- c("HU", "PL", "CZ", "SK", "RO", "AT")
+
+# Time period
+start_year <- 2010
+end_year <- 2023
+```
+
+# 1. Institutional Quality and Governance
+
+## World Bank Governance Indicators
+
+```{r governance-indicators}
+# World Bank Governance Indicators
+# Note: WGI data from wbstats package
+governance_indicators <- c(
+  "CC.EST" = "Control of Corruption",
+  "GE.EST" = "Government Effectiveness",
+  "PV.EST" = "Political Stability",
+  "RQ.EST" = "Regulatory Quality",
+  "RL.EST" = "Rule of Law",
+  "VA.EST" = "Voice and Accountability"
+)
+
+# Fetch governance data
+gov_data <- wb_data(
+  indicator = names(governance_indicators),
+  country = country_codes,
+  start_date = start_year,
+  end_date = end_year
+)
+
+# Reshape data
+gov_long <- gov_data %>%
+  select(country, date, all_of(names(governance_indicators))) %>%
+  pivot_longer(
+    cols = all_of(names(governance_indicators)),
+    names_to = "indicator_code",
+    values_to = "score"
+  ) %>%
+  mutate(
+    indicator_name = governance_indicators[indicator_code],
+    year = as.numeric(date)
+  ) %>%
+  filter(!is.na(score))
+
+# Get latest year available
+latest_gov_year <- max(gov_long$year, na.rm = TRUE)
+```
+
+### Governance Scores: Latest Year (`r latest_gov_year`)
+
+```{r governance-heatmap, fig.height=6}
+# Create heatmap for latest year
+gov_latest <- gov_long %>%
+  filter(year == latest_gov_year) %>%
+  select(country, indicator_name, score)
+
+ggplot(gov_latest, aes(x = indicator_name, y = country, fill = score)) +
+  geom_tile(color = "white", size = 0.5) +
+  geom_text(aes(label = round(score, 2)), color = "white", size = 3.5, fontface = "bold") +
+  scale_fill_gradient2(
+    low = "#d73027",
+    mid = "#fee08b",
+    high = "#1a9850",
+    midpoint = 0,
+    name = "Score\n(-2.5 to +2.5)"
+  ) +
+  labs(
+    title = "Governance Indicators by Country (Latest Year)",
+    subtitle = "Higher scores indicate better governance",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "right"
+  )
+```
+
+### Governance Trends Over Time
+
+```{r governance-trends}
+# Focus on key indicators: Rule of Law and Control of Corruption
+key_gov <- gov_long %>%
+  filter(indicator_name %in% c("Rule of Law", "Control of Corruption"))
+
+ggplot(key_gov, aes(x = year, y = score, color = country, group = country)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  facet_wrap(~indicator_name, ncol = 1, scales = "free_y") +
+  scale_color_brewer(palette = "Set2") +
+  labs(
+    title = "Governance Quality Trends: Rule of Law & Corruption Control",
+    subtitle = "Scores range from -2.5 (weak) to +2.5 (strong)",
+    x = "Year",
+    y = "Governance Score",
+    color = "Country"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+### Key Finding: Institutional Quality
+
+```{r governance-summary}
+# Calculate Hungary's rank and gap
+hungary_gov <- gov_latest %>%
+  filter(country == "Hungary") %>%
+  arrange(indicator_name)
+
+regional_avg <- gov_latest %>%
+  filter(country != "Austria") %>%
+  group_by(indicator_name) %>%
+  summarize(regional_avg = mean(score, na.rm = TRUE))
+
+hungary_comparison <- hungary_gov %>%
+  left_join(regional_avg, by = "indicator_name") %>%
+  mutate(
+    gap_vs_regional = score - regional_avg,
+    gap_pct = (gap_vs_regional / abs(regional_avg)) * 100
+  )
+
+kable(hungary_comparison %>% select(indicator_name, score, regional_avg, gap_vs_regional),
+      col.names = c("Indicator", "Hungary", "CEE Avg", "Gap"),
+      digits = 2,
+      caption = "Hungary's Governance Gap vs. Regional Average") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+**Analysis**: Hungary shows `r ifelse(mean(hungary_comparison$gap_vs_regional) < 0, "below-average", "above-average")` institutional quality compared to CEE peers, with the largest gaps in `r hungary_comparison %>% arrange(gap_vs_regional) %>% slice(1) %>% pull(indicator_name)` and `r hungary_comparison %>% arrange(gap_vs_regional) %>% slice(2) %>% pull(indicator_name)`.
+
+---
+
+# 2. Human Capital and Education
+
+## Education Expenditure and Attainment
+
+```{r education-data}
+# Education indicators
+education_indicators <- c(
+  "SE.XPD.TOTL.GD.ZS" = "Government Expenditure on Education (% GDP)",
+  "SE.TER.CUAT.BA.ZS" = "Tertiary Education Attainment (% 25-34 year olds)",
+  "SE.SEC.ENRR" = "Secondary School Enrollment Rate"
+)
+
+edu_data <- wb_data(
+  indicator = names(education_indicators),
+  country = country_codes,
+  start_date = start_year,
+  end_date = end_year
+)
+
+edu_long <- edu_data %>%
+  select(country, date, all_of(names(education_indicators))) %>%
+  pivot_longer(
+    cols = all_of(names(education_indicators)),
+    names_to = "indicator_code",
+    values_to = "value"
+  ) %>%
+  mutate(
+    indicator_name = education_indicators[indicator_code],
+    year = as.numeric(date)
+  ) %>%
+  filter(!is.na(value))
+```
+
+### Education Spending Trends
+
+```{r education-spending}
+edu_spending <- edu_long %>%
+  filter(indicator_name == "Government Expenditure on Education (% GDP)")
+
+ggplot(edu_spending, aes(x = year, y = value, color = country, group = country)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  scale_color_brewer(palette = "Set2") +
+  labs(
+    title = "Government Expenditure on Education (% of GDP)",
+    x = "Year",
+    y = "Expenditure (% GDP)",
+    color = "Country"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+### Tertiary Education Attainment
+
+```{r tertiary-education}
+tertiary_edu <- edu_long %>%
+  filter(indicator_name == "Tertiary Education Attainment (% 25-34 year olds)") %>%
+  filter(year >= 2015)  # Focus on recent years
+
+if(nrow(tertiary_edu) > 0) {
+  ggplot(tertiary_edu, aes(x = year, y = value, color = country, group = country)) +
+    geom_line(size = 1.2) +
+    geom_point(size = 2) +
+    scale_color_brewer(palette = "Set2") +
+    labs(
+      title = "Tertiary Education Attainment (Ages 25-34)",
+      x = "Year",
+      y = "Attainment Rate (%)",
+      color = "Country"
+    ) +
+    theme(legend.position = "bottom")
+} else {
+  cat("Note: Limited data available for tertiary education attainment")
+}
+```
+
+---
+
+# 3. Innovation and R&D Investment
+
+## Research & Development Expenditure
+
+```{r rd-data}
+# R&D indicators
+rd_indicators <- c(
+  "GB.XPD.RSDV.GD.ZS" = "R&D Expenditure (% GDP)",
+  "IP.PAT.RESD" = "Patent Applications (Residents)",
+  "NY.GDP.PCAP.KD" = "GDP per capita (constant 2015 USD)"
+)
+
+rd_data <- wb_data(
+  indicator = names(rd_indicators),
+  country = country_codes,
+  start_date = start_year,
+  end_date = end_year
+)
+
+rd_long <- rd_data %>%
+  select(country, date, all_of(names(rd_indicators))) %>%
+  pivot_longer(
+    cols = all_of(names(rd_indicators)),
+    names_to = "indicator_code",
+    values_to = "value"
+  ) %>%
+  mutate(
+    indicator_name = rd_indicators[indicator_code],
+    year = as.numeric(date)
+  ) %>%
+  filter(!is.na(value))
+```
+
+### R&D Investment Comparison
+
+```{r rd-spending}
+rd_spending <- rd_long %>%
+  filter(indicator_name == "R&D Expenditure (% GDP)")
+
+ggplot(rd_spending, aes(x = year, y = value, color = country, group = country)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  geom_hline(yintercept = 3.0, linetype = "dashed", color = "red", size = 0.8) +
+  annotate("text", x = max(rd_spending$year, na.rm = TRUE) - 1, y = 3.2,
+           label = "EU 3% Target", color = "red", size = 3.5) +
+  scale_color_brewer(palette = "Set2") +
+  labs(
+    title = "R&D Expenditure as % of GDP",
+    subtitle = "Innovation investment comparison",
+    x = "Year",
+    y = "R&D Expenditure (% GDP)",
+    color = "Country"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+### Innovation Gap Analysis
+
+```{r innovation-gap}
+# Calculate average R&D spending for recent years
+recent_rd <- rd_spending %>%
+  filter(year >= 2018) %>%
+  group_by(country) %>%
+  summarize(avg_rd_pct = mean(value, na.rm = TRUE)) %>%
+  arrange(desc(avg_rd_pct))
+
+ggplot(recent_rd, aes(x = reorder(country, avg_rd_pct), y = avg_rd_pct, fill = country)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = sprintf("%.2f%%", avg_rd_pct)), hjust = -0.2, size = 4) +
+  coord_flip() +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title = "Average R&D Expenditure (2018-2023)",
+    x = NULL,
+    y = "R&D Expenditure (% GDP)"
+  ) +
+  ylim(0, max(recent_rd$avg_rd_pct, na.rm = TRUE) * 1.15)
+```
+
+**Key Finding**: Hungary's R&D investment is `r sprintf("%.2f%%", recent_rd %>% filter(country == "Hungary") %>% pull(avg_rd_pct))` of GDP, ranking `r which(recent_rd$country == "Hungary")` out of `r nrow(recent_rd)` countries in the comparison group.
+
+---
+
+# 4. Foreign Direct Investment Quality
+
+## FDI Inflows Analysis
+
+```{r fdi-data}
+# FDI indicators
+fdi_indicators <- c(
+  "BX.KLT.DINV.WD.GD.ZS" = "FDI Net Inflows (% GDP)",
+  "BX.KLT.DINV.CD.WD" = "FDI Net Inflows (Current USD)"
+)
+
+fdi_data <- wb_data(
+  indicator = names(fdi_indicators),
+  country = country_codes,
+  start_date = start_year,
+  end_date = end_year
+)
+
+fdi_long <- fdi_data %>%
+  select(country, date, all_of(names(fdi_indicators))) %>%
+  pivot_longer(
+    cols = all_of(names(fdi_indicators)),
+    names_to = "indicator_code",
+    values_to = "value"
+  ) %>%
+  mutate(
+    indicator_name = fdi_indicators[indicator_code],
+    year = as.numeric(date)
+  ) %>%
+  filter(!is.na(value))
+```
+
+### FDI Inflows Over Time
+
+```{r fdi-trends}
+fdi_pct <- fdi_long %>%
+  filter(indicator_name == "FDI Net Inflows (% GDP)")
+
+ggplot(fdi_pct, aes(x = year, y = value, color = country, group = country)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  geom_hline(yintercept = 0, linetype = "dotted", color = "gray40") +
+  scale_color_brewer(palette = "Set2") +
+  labs(
+    title = "Foreign Direct Investment Net Inflows (% of GDP)",
+    x = "Year",
+    y = "FDI Inflows (% GDP)",
+    color = "Country"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+---
+
+# 5. Labor Productivity
+
+## Labor Productivity Trends
+
+```{r productivity-data}
+# Productivity indicators
+productivity_indicators <- c(
+  "SL.GDP.PCAP.EM.KD" = "GDP per Person Employed (constant 2017 PPP $)"
+)
+
+prod_data <- wb_data(
+  indicator = names(productivity_indicators),
+  country = country_codes,
+  start_date = start_year,
+  end_date = end_year
+)
+
+prod_long <- prod_data %>%
+  select(country, date, all_of(names(productivity_indicators))) %>%
+  pivot_longer(
+    cols = all_of(names(productivity_indicators)),
+    names_to = "indicator_code",
+    values_to = "value"
+  ) %>%
+  mutate(
+    indicator_name = productivity_indicators[indicator_code],
+    year = as.numeric(date)
+  ) %>%
+  filter(!is.na(value))
+```
+
+### GDP per Person Employed
+
+```{r productivity-chart}
+ggplot(prod_long, aes(x = year, y = value, color = country, group = country)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  scale_color_brewer(palette = "Set2") +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Labor Productivity: GDP per Person Employed",
+    subtitle = "Constant 2017 PPP $",
+    x = "Year",
+    y = "GDP per Person Employed",
+    color = "Country"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+### Productivity Growth Rates
+
+```{r productivity-growth}
+# Calculate annual growth rates
+prod_growth <- prod_long %>%
+  arrange(country, year) %>%
+  group_by(country) %>%
+  mutate(
+    growth_rate = (value / lag(value) - 1) * 100
+  ) %>%
+  filter(!is.na(growth_rate))
+
+# Average growth rate by country
+avg_prod_growth <- prod_growth %>%
+  group_by(country) %>%
+  summarize(avg_growth = mean(growth_rate, na.rm = TRUE)) %>%
+  arrange(desc(avg_growth))
+
+ggplot(avg_prod_growth, aes(x = reorder(country, avg_growth), y = avg_growth, fill = country)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = sprintf("%.2f%%", avg_growth)), hjust = -0.2, size = 4) +
+  coord_flip() +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title = "Average Annual Labor Productivity Growth (2010-2023)",
+    x = NULL,
+    y = "Average Annual Growth (%)"
+  ) +
+  ylim(min(avg_prod_growth$avg_growth, 0) * 1.1,
+       max(avg_prod_growth$avg_growth, na.rm = TRUE) * 1.15)
+```
+
+---
+
+# 6. Financial Sector Development
+
+## Domestic Credit and Financial Depth
+
+```{r financial-data}
+# Financial sector indicators
+financial_indicators <- c(
+  "FS.AST.DOMS.GD.ZS" = "Domestic Credit to Private Sector (% GDP)",
+  "FM.LBL.BMNY.GD.ZS" = "Broad Money (% GDP)"
+)
+
+fin_data <- wb_data(
+  indicator = names(financial_indicators),
+  country = country_codes,
+  start_date = start_year,
+  end_date = end_year
+)
+
+fin_long <- fin_data %>%
+  select(country, date, all_of(names(financial_indicators))) %>%
+  pivot_longer(
+    cols = all_of(names(financial_indicators)),
+    names_to = "indicator_code",
+    values_to = "value"
+  ) %>%
+  mutate(
+    indicator_name = financial_indicators[indicator_code],
+    year = as.numeric(date)
+  ) %>%
+  filter(!is.na(value))
+```
+
+### Credit to Private Sector
+
+```{r credit-trends}
+credit_data <- fin_long %>%
+  filter(indicator_name == "Domestic Credit to Private Sector (% GDP)")
+
+ggplot(credit_data, aes(x = year, y = value, color = country, group = country)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  scale_color_brewer(palette = "Set2") +
+  labs(
+    title = "Domestic Credit to Private Sector (% of GDP)",
+    subtitle = "Indicator of financial sector depth",
+    x = "Year",
+    y = "Credit (% GDP)",
+    color = "Country"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+---
+
+# 7. Trade Openness and Export Complexity
+
+## Trade Indicators
+
+```{r trade-data}
+# Trade indicators
+trade_indicators <- c(
+  "NE.TRD.GNFS.ZS" = "Trade (% GDP)",
+  "TX.VAL.TECH.MF.ZS" = "High-tech Exports (% manufactured exports)"
+)
+
+trade_data <- wb_data(
+  indicator = names(trade_indicators),
+  country = country_codes,
+  start_date = start_year,
+  end_date = end_year
+)
+
+trade_long <- trade_data %>%
+  select(country, date, all_of(names(trade_indicators))) %>%
+  pivot_longer(
+    cols = all_of(names(trade_indicators)),
+    names_to = "indicator_code",
+    values_to = "value"
+  ) %>%
+  mutate(
+    indicator_name = trade_indicators[indicator_code],
+    year = as.numeric(date)
+  ) %>%
+  filter(!is.na(value))
+```
+
+### High-Technology Exports
+
+```{r hightech-exports}
+hightech <- trade_long %>%
+  filter(indicator_name == "High-tech Exports (% manufactured exports)")
+
+if(nrow(hightech) > 0) {
+  ggplot(hightech, aes(x = year, y = value, color = country, group = country)) +
+    geom_line(size = 1.2) +
+    geom_point(size = 2) +
+    scale_color_brewer(palette = "Set2") +
+    labs(
+      title = "High-Technology Exports (% of Manufactured Exports)",
+      subtitle = "Indicator of export sophistication",
+      x = "Year",
+      y = "High-tech Exports (%)",
+      color = "Country"
+    ) +
+    theme(legend.position = "bottom")
+} else {
+  cat("Note: Limited data available for high-tech exports")
+}
+```
+
+---
+
+# 8. Composite Analysis: Identifying the Gap
+
+## Multi-dimensional Scorecard
+
+```{r composite-analysis}
+# Create composite scorecard for latest available year
+# Collect latest values for each indicator category
+
+# Helper function to get latest value with flexible column name
+get_latest_value <- function(data, country_name, value_col = "value") {
+  result <- data %>%
+    filter(country == country_name) %>%
+    arrange(desc(year)) %>%
+    slice(1)
+
+  if(nrow(result) == 0) return(NA)
+
+  if(value_col %in% names(result)) {
+    return(result %>% pull(!!sym(value_col)))
+  } else if("score" %in% names(result)) {
+    return(result %>% pull(score))
+  } else {
+    return(NA)
+  }
+}
+
+# Build scorecard
+countries_list <- c("Hungary", "Poland", "Czech Republic", "Slovakia", "Romania", "Austria")
+
+# Get governance scores
+gov_rule_of_law <- gov_long %>% filter(indicator_name == "Rule of Law")
+gov_corruption <- gov_long %>% filter(indicator_name == "Control of Corruption")
+
+scorecard <- tibble(country = countries_list) %>%
+  rowwise() %>%
+  mutate(
+    rule_of_law = get_latest_value(gov_rule_of_law, country),
+    corruption_control = get_latest_value(gov_corruption, country),
+    rd_spending = get_latest_value(rd_spending, country),
+    labor_productivity = get_latest_value(prod_long, country),
+    credit_to_private = get_latest_value(credit_data, country)
+  ) %>%
+  ungroup()
+
+# Normalize scores to 0-100 scale for comparison
+normalize_score <- function(x) {
+  (x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE)) * 100
+}
+
+scorecard_normalized <- scorecard %>%
+  mutate(
+    across(
+      c(rule_of_law, corruption_control, rd_spending, labor_productivity, credit_to_private),
+      ~normalize_score(.),
+      .names = "{.col}_norm"
+    )
+  ) %>%
+  rowwise() %>%
+  mutate(
+    composite_score = mean(c(rule_of_law_norm, corruption_control_norm,
+                             rd_spending_norm, labor_productivity_norm,
+                             credit_to_private_norm), na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  arrange(desc(composite_score))
+
+# Display scorecard
+kable(scorecard_normalized %>%
+        select(country, rule_of_law_norm, corruption_control_norm,
+               rd_spending_norm, labor_productivity_norm, credit_to_private_norm,
+               composite_score),
+      col.names = c("Country", "Rule of Law", "Corruption Control",
+                    "R&D Spending", "Labor Productivity", "Credit/Private",
+                    "Composite"),
+      digits = 1,
+      caption = "Normalized Scorecard (0-100 scale)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+### Radar Chart: Hungary vs. Regional Average
+
+```{r radar-chart}
+# Prepare data for radar chart
+hungary_scores <- scorecard_normalized %>%
+  filter(country == "Hungary") %>%
+  select(rule_of_law_norm, corruption_control_norm, rd_spending_norm,
+         labor_productivity_norm, credit_to_private_norm) %>%
+  pivot_longer(everything(), names_to = "dimension", values_to = "hungary_score")
+
+regional_scores <- scorecard_normalized %>%
+  filter(country != "Austria") %>%
+  summarize(
+    across(c(rule_of_law_norm, corruption_control_norm, rd_spending_norm,
+             labor_productivity_norm, credit_to_private_norm),
+           ~mean(., na.rm = TRUE))
+  ) %>%
+  pivot_longer(everything(), names_to = "dimension", values_to = "regional_avg")
+
+radar_data <- hungary_scores %>%
+  left_join(regional_scores, by = "dimension") %>%
+  mutate(
+    dimension_label = case_when(
+      dimension == "rule_of_law_norm" ~ "Rule of Law",
+      dimension == "corruption_control_norm" ~ "Corruption Control",
+      dimension == "rd_spending_norm" ~ "R&D Spending",
+      dimension == "labor_productivity_norm" ~ "Labor Productivity",
+      dimension == "credit_to_private_norm" ~ "Financial Depth"
+    )
+  )
+
+# Create comparison chart
+radar_long <- radar_data %>%
+  select(dimension_label, hungary_score, regional_avg) %>%
+  pivot_longer(cols = c(hungary_score, regional_avg),
+               names_to = "series", values_to = "score")
+
+ggplot(radar_long, aes(x = dimension_label, y = score, fill = series, group = series)) +
+  geom_col(position = "dodge", alpha = 0.7) +
+  coord_polar() +
+  scale_fill_manual(
+    values = c("hungary_score" = "#e41a1c", "regional_avg" = "#377eb8"),
+    labels = c("hungary_score" = "Hungary", "regional_avg" = "CEE Average")
+  ) +
+  labs(
+    title = "Hungary's Structural Performance vs. Regional Average",
+    subtitle = "Normalized scores (0-100 scale)",
+    fill = NULL,
+    x = NULL,
+    y = NULL
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_blank(),
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold", size = 14)
+  )
+```
+
+---
+
+# 9. Key Findings and Conclusions
+
+## Summary of Critical Gaps
+
+```{r summary-gaps}
+# Calculate Hungary's gaps across all dimensions
+gaps <- radar_data %>%
+  mutate(gap = hungary_score - regional_avg) %>%
+  arrange(gap)
+
+kable(gaps %>% select(dimension_label, hungary_score, regional_avg, gap),
+      col.names = c("Dimension", "Hungary Score", "CEE Avg", "Gap"),
+      digits = 1,
+      caption = "Hungary's Performance Gaps (Negative = Below Average)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  row_spec(which(gaps$gap < 0), background = "#fee5d9")
+```
+
+## Key Structural Weaknesses
+
+Based on this analysis, Hungary's economic underperformance can be attributed to:
+
+1. **Institutional Quality Deterioration**
+   - Lower governance scores, particularly in Rule of Law and Corruption Control
+   - Creates uncertainty and discourages long-term investment
+
+2. **Innovation Gap**
+   - R&D spending below regional average and far below EU's 3% target
+   - Limits ability to move up the value chain and increase productivity
+
+3. **Productivity Challenges**
+   - Labor productivity growth lagging peers
+   - Suggests structural inefficiencies in the economy
+
+4. **Financial Sector Constraints**
+   - Variable credit access to private sector
+   - May limit entrepreneurship and business expansion
+
+## Priority Research Areas
+
+### Immediate Investigation Needed:
+1. **Policy uncertainty and its impact on investment**
+2. **Brain drain quantification** - skilled worker emigration
+3. **EU funds absorption efficiency** - are funds used productively?
+4. **Industrial policy effectiveness** - value chain positioning
+
+### Secondary Analysis:
+5. Education quality and skills mismatch
+6. State intervention in the economy
+7. Infrastructure bottlenecks
+8. Demographic pressures
+
+---
+
+# 10. Recommendations for Further Research
+
+## Data Collection Priorities
+
+1. **Granular institutional data**: EBRD transition indicators, EIB governance metrics
+2. **Human capital flows**: Eurostat migration statistics, LinkedIn talent flows
+3. **Innovation ecosystem**: European Innovation Scoreboard detailed data
+4. **Firm-level analysis**: Orbis database for productivity distribution
+5. **Political economy**: Policy uncertainty indices, media freedom scores
+
+## Analytical Approaches
+
+1. **Regression analysis**: Identify factors most correlated with growth divergence
+2. **Event studies**: Examine policy changes and their economic impacts
+3. **Comparative case studies**: Why did Poland succeed where Hungary struggled?
+4. **Sectoral deep-dives**: Which industries are underperforming and why?
+
+---
+
+# Appendix: Data Sources
+
+This analysis uses data from:
+
+- **World Bank World Development Indicators (WDI)**
+- **World Bank Worldwide Governance Indicators (WGI)**
+- **OECD Statistics** (via wbstats proxy where available)
+- **Eurostat** (indirectly via World Bank aggregations)
+
+All data accessed via the `wbstats` R package on `r Sys.Date()`.
+
+---
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```

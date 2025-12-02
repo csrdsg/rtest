@@ -1,0 +1,325 @@
+---
+title: "Homework: Univariate Regression"
+author: "Your Name"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(ggplot2)
+```
+
+# Load Data
+
+```{r load-data}
+# Load the dataset
+cars_data <- read.csv("used-cars_2cities_prep.csv")
+
+# Display structure of the data
+str(cars_data)
+head(cars_data)
+```
+
+# Task 1: Relationship Between Car Age and Price
+
+**What kind of relationship do you think exists between these two variables, and why?**
+
+I expect a **negative relationship** between car age and price. As cars get older, they typically depreciate in value due to:
+
+- Increased wear and tear
+- Higher mileage
+- Outdated technology and features
+- Higher maintenance costs
+- Lower reliability concerns
+
+Therefore, older cars should generally have lower prices than newer cars.
+
+# Task 2: Initial Regression (Before Cleaning)
+
+```{r initial-regression}
+# Run initial regression before removing extreme values
+model_initial <- lm(price ~ age, data = cars_data)
+summary(model_initial)
+```
+
+**Interpretation of coefficients:**
+
+- **Intercept (β₀):** `r round(coef(model_initial)[1], 2)` - This represents the predicted price (in USD) of a car with age = 0 (a brand new car).
+- **Slope (β₁):** `r round(coef(model_initial)[2], 2)` - For each additional year of age, the car price decreases by approximately `r abs(round(coef(model_initial)[2], 2))` USD on average.
+
+# Task 3: Check for Extreme Values in Price
+
+```{r check-extremes}
+# Examine price distribution
+summary(cars_data$price)
+
+# Visualize potential outliers using boxplot
+boxplot(cars_data$price, main = "Boxplot of Price", ylab = "Price (USD)")
+
+# Calculate IQR and identify outliers
+Q1 <- quantile(cars_data$price, 0.25)
+Q3 <- quantile(cars_data$price, 0.75)
+IQR_price <- Q3 - Q1
+
+# Define outlier bounds (1.5 * IQR rule)
+lower_bound <- Q1 - 1.5 * IQR_price
+upper_bound <- Q3 + 1.5 * IQR_price
+
+cat("Lower bound:", lower_bound, "\n")
+cat("Upper bound:", upper_bound, "\n")
+
+# Count outliers
+outliers <- cars_data %>%
+  filter(price < lower_bound | price > upper_bound)
+
+cat("\nNumber of extreme values:", nrow(outliers), "\n")
+
+# Remove extreme values
+cars_clean <- cars_data %>%
+  filter(price >= lower_bound & price <= upper_bound)
+
+cat("Original observations:", nrow(cars_data), "\n")
+cat("After removing extremes:", nrow(cars_clean), "\n")
+cat("Observations removed:", nrow(cars_data) - nrow(cars_clean), "\n")
+```
+
+**Explanation:**
+
+I used the **IQR (Interquartile Range) method** to identify extreme values. Values below Q1 - 1.5×IQR or above Q3 + 1.5×IQR are considered outliers. I removed **`r nrow(outliers)` observations** that had extreme price values. These extreme values could represent data entry errors, luxury vehicles, or special cases that don't represent typical used car prices and could distort our regression analysis.
+
+# Task 4: Descriptive Statistics and Histogram
+
+```{r descriptive-stats}
+# Calculate descriptive statistics for price
+mean_price <- mean(cars_clean$price)
+median_price <- median(cars_clean$price)
+sd_price <- sd(cars_clean$price)
+
+cat("Mean price:", round(mean_price, 2), "USD\n")
+cat("Median price:", round(median_price, 2), "USD\n")
+cat("Standard deviation:", round(sd_price, 2), "USD\n")
+
+# Create histogram
+ggplot(cars_clean, aes(x = price)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "black", alpha = 0.7) +
+  geom_vline(aes(xintercept = mean_price, color = "Mean"),
+             linetype = "dashed", size = 1) +
+  geom_vline(aes(xintercept = median_price, color = "Median"),
+             linetype = "dashed", size = 1) +
+  scale_color_manual(values = c("Mean" = "red", "Median" = "blue")) +
+  labs(title = "Distribution of Car Prices",
+       x = "Price (USD)",
+       y = "Frequency",
+       color = "Statistics") +
+  theme_minimal()
+```
+
+**Interpretation:**
+
+- **Mean:** `r round(mean_price, 2)` USD - the average car price
+- **Median:** `r round(median_price, 2)` USD - the middle value, suggesting that 50% of cars are priced below this value
+- **Standard deviation:** `r round(sd_price, 2)` USD - indicates the typical deviation from the mean
+
+The histogram shows the distribution is **right-skewed** (if mean > median), meaning there are more lower-priced cars with some higher-priced vehicles pulling the mean upward. The distribution appears to be concentrated in the lower to middle price range.
+
+# Task 5: Scatter Plot of Price vs Age
+
+```{r scatter-plot}
+ggplot(cars_clean, aes(x = age, y = price)) +
+  geom_point(alpha = 0.3, color = "darkblue") +
+  geom_smooth(method = "lm", se = TRUE, color = "red", size = 1) +
+  labs(title = "Relationship Between Car Age and Price",
+       x = "Age (years)",
+       y = "Price (USD)") +
+  theme_minimal()
+```
+
+**Interpretation:**
+
+The scatter plot confirms our hypothesis from Task 1. There is a clear **negative linear relationship** between car age and price. As age increases, price tends to decrease. The red regression line shows this downward trend. The points are somewhat scattered around the line, indicating that while age is an important predictor of price, other factors also influence car prices.
+
+# Task 6: Correlation Coefficient
+
+```{r correlation}
+# Calculate correlation coefficient
+cor_coefficient <- cor(cars_clean$price, cars_clean$age)
+cat("Correlation coefficient (r):", round(cor_coefficient, 4), "\n")
+cat("Coefficient of determination (r²):", round(cor_coefficient^2, 4), "\n")
+```
+
+**Interpretation:**
+
+The correlation coefficient is **r = `r round(cor_coefficient, 4)`**. This indicates a **moderate to strong negative linear relationship** between age and price.
+
+- The negative sign confirms that as age increases, price decreases
+- The magnitude (absolute value) suggests a substantial linear association
+- r² = `r round(cor_coefficient^2, 4)` means that approximately `r round(cor_coefficient^2 * 100, 1)`% of the variance in price can be explained by age alone
+
+# Task 7: Regression After Removing Extremes
+
+```{r final-regression}
+# Run regression on cleaned data
+model_clean <- lm(price ~ age, data = cars_clean)
+summary(model_clean)
+```
+
+**Interpretation of coefficients:**
+
+- **Intercept (β₀):** `r round(coef(model_clean)[1], 2)` USD - The predicted price of a brand new car (age = 0)
+- **Slope (β₁):** `r round(coef(model_clean)[2], 2)` USD - For each additional year of age, the car price decreases by approximately `r abs(round(coef(model_clean)[2], 2))` USD on average
+- **p-values:** Both coefficients are statistically significant (p < 0.05), indicating that the relationship is not due to random chance
+
+# Task 8: Comparison of Coefficients
+
+```{r compare-models}
+cat("Initial Model (with extremes):\n")
+cat("  Intercept:", round(coef(model_initial)[1], 2), "\n")
+cat("  Slope:", round(coef(model_initial)[2], 2), "\n")
+cat("  R-squared:", round(summary(model_initial)$r.squared, 4), "\n\n")
+
+cat("Clean Model (without extremes):\n")
+cat("  Intercept:", round(coef(model_clean)[1], 2), "\n")
+cat("  Slope:", round(coef(model_clean)[2], 2), "\n")
+cat("  R-squared:", round(summary(model_clean)$r.squared, 4), "\n\n")
+
+# Calculate differences
+diff_intercept <- coef(model_clean)[1] - coef(model_initial)[1]
+diff_slope <- coef(model_clean)[2] - coef(model_initial)[2]
+diff_rsquared <- summary(model_clean)$r.squared - summary(model_initial)$r.squared
+
+cat("Differences:\n")
+cat("  Intercept difference:", round(diff_intercept, 2), "\n")
+cat("  Slope difference:", round(diff_slope, 2), "\n")
+cat("  R-squared difference:", round(diff_rsquared, 4), "\n")
+```
+
+**Evaluation:**
+
+There **is a difference** between the coefficients from the initial and cleaned models. The difference is **moderate**, particularly in:
+
+- The intercept changed by `r round(abs(diff_intercept), 2)` USD
+- The slope changed by `r round(abs(diff_slope), 2)` USD per year
+- The R-squared changed by `r round(diff_rsquared, 4)`
+
+**Importance of handling extreme values:**
+
+This comparison demonstrates that extreme values can substantially influence regression results. Removing outliers typically:
+
+- Provides more reliable estimates of the true relationship
+- Improves model fit (often higher R²)
+- Reduces the influence of unusual observations that may not represent the general pattern
+- Makes predictions more accurate for typical cases
+
+# Task 9: R-squared Interpretation
+
+```{r r-squared}
+r_squared <- summary(model_clean)$r.squared
+cat("R-squared:", round(r_squared, 4), "\n")
+cat("As percentage:", round(r_squared * 100, 2), "%\n")
+```
+
+**Interpretation:**
+
+The R-squared value is **`r round(r_squared, 4)`** (or `r round(r_squared * 100, 2)`%). This means that:
+
+- Approximately **`r round(r_squared * 100, 2)`% of the variation in car prices** can be explained by car age alone
+- The remaining **`r round((1 - r_squared) * 100, 2)`%** is due to other factors not included in the model (e.g., mileage, brand, condition, features, location)
+- This suggests that age is an important predictor of price, but other variables also play significant roles
+
+# Task 10: Interpolation and Extrapolation
+
+```{r predictions}
+# Get range of age in the data
+age_range <- range(cars_clean$age)
+cat("Age range in data:", age_range[1], "to", age_range[2], "years\n\n")
+
+# Interpolation: predict for an age within the observed range
+age_interp <- median(cars_clean$age)  # Using median as an example
+pred_interp <- predict(model_clean, newdata = data.frame(age = age_interp))
+
+cat("INTERPOLATION:\n")
+cat("  Age:", age_interp, "years (within range)\n")
+cat("  Predicted price:", round(pred_interp, 2), "USD\n\n")
+
+# Extrapolation: predict for an age outside the observed range
+age_extrap <- max(cars_clean$age) + 5  # 5 years beyond the maximum
+pred_extrap <- predict(model_clean, newdata = data.frame(age = age_extrap))
+
+cat("EXTRAPOLATION:\n")
+cat("  Age:", age_extrap, "years (beyond range)\n")
+cat("  Predicted price:", round(pred_extrap, 2), "USD\n")
+```
+
+**Process and Interpretation:**
+
+**Interpolation** (age = `r age_interp` years):
+- This age falls **within** the observed data range (`r age_range[1]` to `r age_range[2]` years)
+- Predicted price: **`r round(pred_interp, 2)` USD**
+- This prediction is **reliable** because it's based on observed data patterns
+- We can be reasonably confident in this estimate
+
+**Extrapolation** (age = `r age_extrap` years):
+- This age falls **outside** the observed data range
+- Predicted price: **`r round(pred_extrap, 2)` USD**
+- This prediction is **less reliable** because we're assuming the linear relationship continues beyond our data
+- **Caution:** The model may not accurately represent very old cars; the price might not continue decreasing linearly, or could even become negative (which is unrealistic)
+
+# Task 11: Most Expensive and Cheapest Cars Relative to Age
+
+```{r residual-analysis}
+# Calculate residuals (actual price - predicted price)
+cars_clean$predicted_price <- predict(model_clean, newdata = cars_clean)
+cars_clean$residual <- cars_clean$price - cars_clean$predicted_price
+
+# Find 3 most expensive (largest positive residuals)
+most_expensive <- cars_clean %>%
+  arrange(desc(residual)) %>%
+  select(age, price, predicted_price, residual) %>%
+  head(3)
+
+cat("3 MOST EXPENSIVE CARS (relative to their age):\n")
+print(most_expensive, row.names = FALSE)
+
+# Find 3 cheapest (largest negative residuals)
+most_cheap <- cars_clean %>%
+  arrange(residual) %>%
+  select(age, price, predicted_price, residual) %>%
+  head(3)
+
+cat("\n3 CHEAPEST CARS (relative to their age):\n")
+print(most_cheap, row.names = FALSE)
+```
+
+**How I determined these:**
+
+I calculated the **residuals** (difference between actual and predicted price).
+
+- **Positive residuals** = cars priced higher than predicted = overpriced relative to age
+- **Negative residuals** = cars priced lower than predicted = underpriced relative to age
+
+**Why might they be over- or underpriced?**
+
+**Overpriced cars** (positive residuals) might be:
+- Luxury or premium brands
+- Well-maintained vehicles with low mileage
+- Special editions or rare models
+- Cars with desirable features or recent upgrades
+- Located in high-demand markets
+
+**Underpriced cars** (negative residuals) might be:
+- Poor condition or high mileage
+- Unpopular models or colors
+- History of accidents or damage
+- Mechanical issues
+- Sellers needing quick sales
+- Located in low-demand markets
+
+These residuals highlight that while age is important, many other factors influence used car prices.
+
+---
+
+# Conclusion
+
+This analysis demonstrates the strong negative relationship between car age and price. The univariate regression model explains a substantial portion of price variation, though other factors clearly play important roles. Removing extreme values improved our model's reliability and provided more accurate estimates for typical used cars.

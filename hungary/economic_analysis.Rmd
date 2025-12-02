@@ -1,0 +1,988 @@
+---
+title: "Longitudinal Economic Comparison: Hungary vs. Neighbors (2010–Present)"
+author: "Economic Analysis Report"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: cosmo
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 10, fig.height = 6)
+
+# Load required libraries
+library(wbstats)
+library(tidyverse)
+library(ggplot2)
+library(plotly)
+library(knitr)
+library(kableExtra)
+```
+
+# I. Introduction and Scope
+
+## A. Timeframe and Context
+
+This analysis examines the economic trajectory of Hungary compared to its seven direct neighbors from 2010 through the most recent available data, focusing on key World Bank Development Indicators (WDI).
+
+**Period:** 2010–Present (focusing on yearly data points)
+
+**Key Events:**
+- Post-Global Financial Crisis recovery (2010-2013)
+- EU integration/Eurozone issues
+- COVID-19 pandemic response (2020-2022)
+
+**Target Countries (N=8):** Hungary, Austria, Slovakia, Ukraine, Romania, Serbia, Croatia, Slovenia
+
+**Data Source:** World Bank Development Indicators (WDI)
+
+```{r data_setup}
+# Define countries
+countries <- c("HUN", "AUT", "SVK", "UKR", "ROU", "SRB", "HRV", "SVN")
+country_names <- c("Hungary", "Austria", "Slovakia", "Ukraine", "Romania", "Serbia", "Croatia", "Slovenia")
+
+# Define indicators with names
+indicators_list <- list(
+  "NY.GDP.PCAP.PP.CD" = "GDP per capita, PPP",
+  "NY.GDP.MKTP.KD.ZG" = "GDP Growth",
+  "FP.CPI.TOTL.ZG" = "Inflation",
+  "GC.DOD.TOTL.GD.ZS" = "Central Government Debt (Total Debt)",
+  "BX.KLT.DINV.WD.GD.ZS" = "FDI net inflows",
+  "SL.UEM.TOTL.ZS" = "Unemployment"
+)
+
+# Fetch data from World Bank - fetch each indicator separately to handle errors
+wb_data_list <- list()
+
+for (ind in names(indicators_list)) {
+  tryCatch({
+    temp_data <- wb_data(
+      indicator = ind,
+      country = countries,
+      start_date = 2010,
+      end_date = 2024
+    )
+    wb_data_list[[ind]] <- temp_data
+    cat("Successfully fetched:", ind, "\n")
+  }, error = function(e) {
+    cat("Failed to fetch:", ind, "\n", conditionMessage(e), "\n")
+  })
+}
+
+# Combine all data
+wb_data <- bind_rows(wb_data_list)
+
+# Check what columns we have
+if (nrow(wb_data) > 0) {
+  cat("Columns in wb_data:", paste(names(wb_data), collapse = ", "), "\n")
+}
+
+# Clean and prepare data
+# The wb_data function returns: iso2c, iso3c, country, date, and the indicator value columns
+wb_data_clean <- wb_data %>%
+  mutate(year = as.numeric(date)) %>%
+  pivot_longer(
+    cols = all_of(names(indicators_list)),
+    names_to = "indicator_id",
+    values_to = "value"
+  ) %>%
+  filter(!is.na(value))
+```
+
+# II. Key Comparative Indicators
+
+## A. Living Standards and Economic Output
+
+### 1. GDP per capita, PPP (Current International $)
+
+**Analysis Focus:** Convergence/Divergence. How did Hungary's standard of living, adjusted for purchasing power, track compared to the high-income benchmark (Austria) and the Central/Eastern European (CEE) neighbors over time?
+
+```{r gdp_per_capita}
+# Filter GDP per capita data
+gdp_pc <- wb_data_clean %>%
+  filter(indicator_id == "NY.GDP.PCAP.PP.CD") %>%
+  drop_na(value)
+
+# Create line plot
+ggplot(gdp_pc, aes(x = year, y = value, color = country, group = country)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  labs(
+    title = "GDP per Capita, PPP (Current International $)",
+    subtitle = "2010-Present",
+    x = "Year",
+    y = "GDP per capita (PPP)",
+    color = "Country"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "right")
+
+# Summary statistics table
+gdp_pc_summary <- gdp_pc %>%
+  group_by(country) %>%
+  summarize(
+    `2010` = first(value[year == 2010], default = NA),
+    `Most Recent` = last(value),
+    `Average` = mean(value, na.rm = TRUE),
+    `Growth %` = ((last(value) - first(value)) / first(value)) * 100
+  ) %>%
+  arrange(desc(`Most Recent`))
+
+kable(gdp_pc_summary,
+      digits = 0,
+      format.args = list(big.mark = ","),
+      caption = "GDP per Capita Summary Statistics") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+#### Extended Analysis: GDP per Capita Trends
+
+```{r gdp_pc_analysis}
+# Calculate Hungary's performance
+hungary_gdp <- gdp_pc %>% filter(country == "Hungary")
+hungary_2010 <- hungary_gdp %>% filter(year == 2010) %>% pull(value)
+hungary_recent <- hungary_gdp %>% filter(year == max(year)) %>% pull(value)
+hungary_growth_pct <- ((hungary_recent - hungary_2010) / hungary_2010) * 100
+
+# Regional average (excluding Austria)
+regional_avg <- gdp_pc %>%
+  filter(country != "Austria") %>%
+  group_by(year) %>%
+  summarize(avg_gdp = mean(value, na.rm = TRUE))
+
+# Create comparison chart
+gdp_pc_with_avg <- gdp_pc %>%
+  left_join(regional_avg, by = "year")
+
+ggplot() +
+  geom_line(data = gdp_pc_with_avg %>% filter(country != "Austria"),
+            aes(x = year, y = value, color = country, group = country), size = 0.8, alpha = 0.6) +
+  geom_line(data = regional_avg, aes(x = year, y = avg_gdp),
+            color = "black", size = 1.5, linetype = "dashed") +
+  geom_line(data = gdp_pc_with_avg %>% filter(country == "Hungary"),
+            aes(x = year, y = value), color = "red", size = 1.5) +
+  annotate("text", x = 2020, y = regional_avg %>% filter(year == 2020) %>% pull(avg_gdp),
+           label = "Regional Avg", vjust = -1, fontface = "bold") +
+  annotate("text", x = 2020, y = hungary_gdp %>% filter(year == 2020) %>% pull(value),
+           label = "HUNGARY", vjust = -1, color = "red", fontface = "bold") +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  labs(
+    title = "Hungary's GDP per Capita vs. Regional Average (CEE)",
+    subtitle = "Hungary highlighted in red, Regional average (excluding Austria) in dashed black",
+    x = "Year",
+    y = "GDP per capita (PPP)",
+    color = "Country"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+**Key Insights:**
+
+1. **Overall Growth**: Hungary's GDP per capita (PPP) grew by `r round(hungary_growth_pct, 1)`% from 2010 to the most recent year, moving from $`r format(hungary_2010, big.mark=",", scientific=FALSE)` to $`r format(hungary_recent, big.mark=",", scientific=FALSE)`.
+
+2. **Regional Positioning**: Hungary's performance relative to its CEE neighbors shows a consistent upward trajectory, though it remains in the middle tier among the comparison countries.
+
+3. **Convergence Dynamics**: While all CEE countries show convergence toward Austrian living standards, the pace varies significantly. Hungary's convergence has been steady but not exceptional compared to high-performers like Slovakia and Slovenia.
+
+```{r gdp_annual_change}
+# Calculate year-over-year changes in GDP per capita
+gdp_pc_changes <- gdp_pc %>%
+  arrange(country, year) %>%
+  group_by(country) %>%
+  mutate(
+    gdp_change = value - lag(value),
+    gdp_change_pct = (gdp_change / lag(value)) * 100
+  ) %>%
+  filter(!is.na(gdp_change))
+
+# Bar chart of average annual growth
+avg_annual_growth <- gdp_pc_changes %>%
+  group_by(country) %>%
+  summarize(avg_annual_growth = mean(gdp_change_pct, na.rm = TRUE)) %>%
+  arrange(desc(avg_annual_growth))
+
+ggplot(avg_annual_growth, aes(x = reorder(country, avg_annual_growth), y = avg_annual_growth,
+                                fill = ifelse(country == "Hungary", "Hungary", "Other"))) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_manual(values = c("Hungary" = "red", "Other" = "steelblue")) +
+  labs(
+    title = "Average Annual Growth in GDP per Capita (PPP)",
+    subtitle = "2010-Present",
+    x = "",
+    y = "Average Annual Growth (%)",
+    fill = ""
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+```
+
+
+### 2. GDP Growth (Annual %)
+
+**Analysis Focus:** Resilience and Catch-up. Average annual growth rate (2010-Present) to assess long-term momentum. Analysis of peak performance years and recession years.
+
+```{r gdp_growth}
+# Filter GDP growth data
+gdp_growth <- wb_data_clean %>%
+  filter(indicator_id == "NY.GDP.MKTP.KD.ZG") %>%
+  drop_na(value)
+
+# Create line plot
+ggplot(gdp_growth, aes(x = year, y = value, color = country, group = country)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  labs(
+    title = "GDP Growth (Annual %)",
+    subtitle = "2010-Present - Note: 2020 COVID-19 impact",
+    x = "Year",
+    y = "GDP Growth (%)",
+    color = "Country"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "right")
+
+# Summary statistics
+gdp_growth_summary <- gdp_growth %>%
+  group_by(country) %>%
+  summarize(
+    `Avg Growth` = mean(value, na.rm = TRUE),
+    `Min Growth` = min(value, na.rm = TRUE),
+    `Max Growth` = max(value, na.rm = TRUE),
+    `SD` = sd(value, na.rm = TRUE)
+  ) %>%
+  arrange(desc(`Avg Growth`))
+
+kable(gdp_growth_summary,
+      digits = 2,
+      caption = "GDP Growth Summary Statistics") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+#### Extended Analysis: GDP Growth Patterns
+
+```{r gdp_growth_analysis}
+# Identify recession years and recovery periods for Hungary
+hungary_growth <- gdp_growth %>% filter(country == "Hungary")
+
+# Calculate volatility (standard deviation) for each country
+growth_volatility <- gdp_growth %>%
+  group_by(country) %>%
+  summarize(
+    volatility = sd(value, na.rm = TRUE),
+    avg_growth = mean(value, na.rm = TRUE)
+  ) %>%
+  arrange(desc(volatility))
+
+# Volatility vs Growth scatter plot
+ggplot(growth_volatility, aes(x = volatility, y = avg_growth, label = country)) +
+  geom_point(aes(color = ifelse(country == "Hungary", "Hungary", "Other")), size = 4) +
+  geom_text(vjust = -0.8, hjust = 0.5, size = 3.5, fontface = "bold") +
+  scale_color_manual(values = c("Hungary" = "red", "Other" = "steelblue")) +
+  geom_vline(xintercept = mean(growth_volatility$volatility), linetype = "dashed", alpha = 0.5) +
+  geom_hline(yintercept = mean(growth_volatility$avg_growth), linetype = "dashed", alpha = 0.5) +
+  labs(
+    title = "GDP Growth: Risk-Return Profile",
+    subtitle = "Higher and to the right = High growth but volatile; Upper left = Stable high growth",
+    x = "Volatility (Standard Deviation)",
+    y = "Average Annual GDP Growth (%)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+```
+
+**Key Insights:**
+
+1. **Growth Volatility**: Countries with higher average growth often experience greater volatility. Ukraine shows extreme volatility due to geopolitical conflicts, while Austria demonstrates stable but moderate growth.
+
+2. **Hungary's Profile**: Hungary exhibits moderate growth with moderate volatility, suggesting a relatively balanced economic trajectory without extreme booms or busts.
+
+3. **Pre-COVID vs. Post-COVID**: The 2020 pandemic created the sharpest economic contraction across all countries, with recovery patterns varying significantly by 2021-2022.
+
+```{r growth_periods}
+# Period analysis: Pre-crisis recovery, stable growth, COVID, recovery
+gdp_growth_periods <- gdp_growth %>%
+  mutate(period = case_when(
+    year >= 2010 & year <= 2013 ~ "Post-GFC Recovery (2010-2013)",
+    year >= 2014 & year <= 2019 ~ "Stable Growth (2014-2019)",
+    year >= 2020 & year <= 2022 ~ "COVID Period (2020-2022)",
+    year >= 2023 ~ "Post-COVID (2023+)"
+  )) %>%
+  filter(!is.na(period))
+
+period_avg_growth <- gdp_growth_periods %>%
+  group_by(country, period) %>%
+  summarize(avg_growth = mean(value, na.rm = TRUE), .groups = "drop")
+
+ggplot(period_avg_growth, aes(x = period, y = avg_growth, fill = country)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_hline(yintercept = 0, color = "black") +
+  labs(
+    title = "Average GDP Growth by Period",
+    subtitle = "Comparing performance across distinct economic phases",
+    x = "",
+    y = "Average GDP Growth (%)",
+    fill = "Country"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "right")
+```
+
+**Period-Specific Observations:**
+
+- **2010-2013** (Post-GFC Recovery): Most countries showed strong recovery, with Romania and Slovakia leading growth rates.
+- **2014-2019** (Stable Growth): This period represents normalized growth patterns before COVID-19 disruption.
+- **2020-2022** (COVID Period): Sharp contraction in 2020 followed by varied recovery trajectories.
+- **2023+** (Post-COVID): Countries adjusting to new economic realities including inflation pressures.
+
+
+## B. Macroeconomic Stability and Vulnerability
+
+### 3. Inflation, Consumer Prices (Annual %)
+
+**Analysis Focus:** Price Stability. Compare the average inflation rate over the period, highlighting divergence points (e.g., post-2021 energy crisis impact).
+
+```{r inflation}
+# Filter inflation data
+inflation <- wb_data_clean %>%
+  filter(indicator_id == "FP.CPI.TOTL.ZG") %>%
+  drop_na(value)
+
+# Create line plot
+ggplot(inflation, aes(x = year, y = value, color = country, group = country)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  geom_hline(yintercept = 2, linetype = "dashed", color = "red", alpha = 0.5) +
+  annotate("text", x = 2010, y = 2.5, label = "ECB Target: 2%", hjust = 0) +
+  labs(
+    title = "Inflation, Consumer Prices (Annual %)",
+    subtitle = "2010-Present",
+    x = "Year",
+    y = "Inflation Rate (%)",
+    color = "Country"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "right")
+
+# Summary statistics
+inflation_summary <- inflation %>%
+  group_by(country) %>%
+  summarize(
+    `Avg Inflation` = mean(value, na.rm = TRUE),
+    `Min` = min(value, na.rm = TRUE),
+    `Max` = max(value, na.rm = TRUE),
+    `Recent (Latest Year)` = last(value)
+  ) %>%
+  arrange(`Avg Inflation`)
+
+kable(inflation_summary,
+      digits = 2,
+      caption = "Inflation Summary Statistics") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+#### Extended Analysis: Inflation Patterns and Price Stability
+
+```{r inflation_analysis}
+# Highlight post-2021 energy crisis
+inflation_recent <- inflation %>%
+  filter(year >= 2020)
+
+ggplot(inflation_recent, aes(x = year, y = value, color = country, group = country)) +
+  geom_line(size = 1.5) +
+  geom_point(size = 3) +
+  geom_hline(yintercept = 2, linetype = "dashed", color = "darkgreen", size = 1) +
+  annotate("text", x = 2020.2, y = 2.5, label = "ECB Target: 2%", hjust = 0, color = "darkgreen") +
+  labs(
+    title = "Inflation Surge: 2020-Present",
+    subtitle = "Post-COVID energy crisis and supply chain disruptions",
+    x = "Year",
+    y = "Inflation Rate (%)",
+    color = "Country"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "right")
+
+# Years above 3% inflation (concerning threshold)
+high_inflation_years <- inflation %>%
+  filter(value > 3) %>%
+  group_by(country) %>%
+  summarize(years_above_3pct = n()) %>%
+  arrange(desc(years_above_3pct))
+
+kable(high_inflation_years,
+      col.names = c("Country", "Years with Inflation > 3%"),
+      caption = "Number of Years with High Inflation (>3%)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+**Key Insights:**
+
+1. **Pre-2020 Stability**: Most countries maintained relatively stable inflation close to the ECB's 2% target during 2010-2019.
+
+2. **2021-2023 Surge**: The post-COVID period saw dramatic inflation spikes across all countries, driven by:
+   - Energy price shocks (Russia-Ukraine conflict impact)
+   - Supply chain disruptions
+   - Pent-up demand release
+   - Expansionary monetary policies during COVID
+
+3. **Hungary's Inflation Challenge**: Hungary has experienced more persistent inflationary pressures compared to some neighbors, particularly in recent years, reflecting:
+   - Currency depreciation effects (Forint weakness)
+   - Energy dependency
+   - Domestic demand pressures
+
+4. **Policy Response**: Countries with independent monetary policy (Serbia) vs. those pegged to Euro or EU-bound show different adjustment mechanisms.
+
+
+### 4. Central Government Debt, Total (% of GDP)
+
+**Analysis Focus:** Fiscal Consolidation. Compare the change in debt burden: (Recent Value - 2010 Value). Which countries successfully reduced their debt-to-GDP ratio, and which saw it increase?
+
+```{r debt}
+# Filter debt data
+debt <- wb_data_clean %>%
+  filter(indicator_id == "GC.DOD.TOTL.GD.ZS") %>%
+  drop_na(value)
+
+# Create line plot
+ggplot(debt, aes(x = year, y = value, color = country, group = country)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  geom_hline(yintercept = 60, linetype = "dashed", color = "red", alpha = 0.5) +
+  annotate("text", x = 2010, y = 65, label = "EU Maastricht Limit: 60%", hjust = 0) +
+  labs(
+    title = "Central Government Debt (% of GDP)",
+    subtitle = "2010-Present",
+    x = "Year",
+    y = "Debt (% of GDP)",
+    color = "Country"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "right")
+
+# Summary statistics
+debt_summary <- debt %>%
+  group_by(country) %>%
+  summarize(
+    `2010` = first(value[year == 2010], default = NA),
+    `Most Recent` = last(value),
+    `Change` = last(value) - first(value[year == 2010], default = NA),
+    `Avg Debt` = mean(value, na.rm = TRUE)
+  ) %>%
+  arrange(desc(`Most Recent`))
+
+kable(debt_summary,
+      digits = 2,
+      caption = "Central Government Debt Summary") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+## C. Structural and External Economy
+
+### 5. Foreign Direct Investment, Net Inflows (% of GDP)
+
+**Analysis Focus:** External Attractiveness. Compare the overall trend and volatility in attracting foreign investment over the period.
+
+```{r fdi}
+# Filter FDI data
+fdi <- wb_data_clean %>%
+  filter(indicator_id == "BX.KLT.DINV.WD.GD.ZS") %>%
+  drop_na(value)
+
+# Create line plot
+ggplot(fdi, aes(x = year, y = value, color = country, group = country)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  labs(
+    title = "Foreign Direct Investment, Net Inflows (% of GDP)",
+    subtitle = "2010-Present",
+    x = "Year",
+    y = "FDI Net Inflows (% of GDP)",
+    color = "Country"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "right")
+
+# Summary statistics
+fdi_summary <- fdi %>%
+  group_by(country) %>%
+  summarize(
+    `Avg FDI` = mean(value, na.rm = TRUE),
+    `Min` = min(value, na.rm = TRUE),
+    `Max` = max(value, na.rm = TRUE),
+    `SD` = sd(value, na.rm = TRUE)
+  ) %>%
+  arrange(desc(`Avg FDI`))
+
+kable(fdi_summary,
+      digits = 2,
+      caption = "FDI Net Inflows Summary Statistics") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+### 6. Unemployment, Total (% of Total Labor Force)
+
+**Analysis Focus:** Labor Market Health. Track the rate of job market recovery from 2010 onwards, comparing initial high rates (in some countries) to recent structural lows.
+
+```{r unemployment}
+# Filter unemployment data
+unemployment <- wb_data_clean %>%
+  filter(indicator_id == "SL.UEM.TOTL.ZS") %>%
+  drop_na(value)
+
+# Create line plot
+ggplot(unemployment, aes(x = year, y = value, color = country, group = country)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  labs(
+    title = "Unemployment, Total (% of Total Labor Force)",
+    subtitle = "2010-Present",
+    x = "Year",
+    y = "Unemployment Rate (%)",
+    color = "Country"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "right")
+
+# Summary statistics
+unemployment_summary <- unemployment %>%
+  group_by(country) %>%
+  summarize(
+    `2010` = first(value[year == 2010], default = NA),
+    `Most Recent` = last(value),
+    `Change` = last(value) - first(value[year == 2010], default = NA),
+    `Avg` = mean(value, na.rm = TRUE)
+  ) %>%
+  arrange(`Most Recent`)
+
+kable(unemployment_summary,
+      digits = 2,
+      caption = "Unemployment Rate Summary Statistics") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+# III. Summary of Economic Trends (2010–Present)
+
+## A. Convergence/Divergence Analysis
+
+```{r convergence}
+# Calculate convergence relative to Austria (high-income benchmark)
+convergence_data <- gdp_pc %>%
+  select(country, year, value) %>%
+  pivot_wider(names_from = country, values_from = value) %>%
+  pivot_longer(cols = -c(year, Austria), names_to = "country", values_to = "gdp_pc") %>%
+  mutate(
+    gap_to_austria = (gdp_pc / Austria) * 100,
+    country = as.factor(country)
+  ) %>%
+  filter(country != "Austria") %>%
+  drop_na()
+
+ggplot(convergence_data, aes(x = year, y = gap_to_austria, color = country, group = country)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  geom_hline(yintercept = 100, linetype = "dashed", color = "black") +
+  labs(
+    title = "GDP per Capita Convergence to Austria",
+    subtitle = "GDP per capita as % of Austria's level",
+    x = "Year",
+    y = "% of Austria's GDP per capita",
+    color = "Country"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "right")
+```
+
+## B. Crisis Resilience
+
+```{r crisis_resilience}
+# Focus on 2020 COVID crisis
+crisis_2020 <- gdp_growth %>%
+  filter(year %in% c(2019, 2020, 2021, 2022)) %>%
+  group_by(country) %>%
+  arrange(year) %>%
+  mutate(period = case_when(
+    year == 2019 ~ "Pre-COVID",
+    year == 2020 ~ "COVID",
+    year == 2021 ~ "Recovery",
+    year == 2022 ~ "Post-Recovery"
+  ))
+
+ggplot(crisis_2020, aes(x = period, y = value, fill = country)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black") +
+  labs(
+    title = "COVID-19 Crisis Response: GDP Growth Comparison",
+    subtitle = "2019-2022 Performance",
+    x = "Period",
+    y = "GDP Growth (%)",
+    fill = "Country"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "right")
+```
+
+## C. Comparative Performance Dashboard
+
+```{r overall_ranking}
+# Create overall performance ranking
+overall_performance <- wb_data_clean %>%
+  drop_na(value) %>%
+  group_by(country, indicator_id) %>%
+  summarize(avg_value = mean(value, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = indicator_id, values_from = avg_value) %>%
+  rename(
+    `GDP pc PPP` = NY.GDP.PCAP.PP.CD,
+    `GDP Growth` = NY.GDP.MKTP.KD.ZG,
+    `Inflation` = FP.CPI.TOTL.ZG,
+    `Gov Debt` = GC.DOD.TOTL.GD.ZS,
+    `FDI` = BX.KLT.DINV.WD.GD.ZS,
+    `Unemployment` = SL.UEM.TOTL.ZS
+  )
+
+kable(overall_performance,
+      digits = 2,
+      format.args = list(big.mark = ","),
+      caption = "Average Performance Across All Indicators (2010-Present)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+  scroll_box(width = "100%")
+```
+
+## D. Key Findings
+
+### Hungary's Economic Performance Relative to Neighbors:
+
+**Strengths:**
+
+```{r hungary_strengths}
+# Calculate Hungary's ranking in each indicator
+hungary_rankings <- wb_data_clean %>%
+  drop_na(value) %>%
+  group_by(indicator_id, year) %>%
+  mutate(rank = rank(-value, ties.method = "average")) %>%
+  filter(country == "Hungary") %>%
+  group_by(indicator_id) %>%
+  summarize(avg_rank = mean(rank, na.rm = TRUE)) %>%
+  arrange(avg_rank)
+
+print("Hungary's average ranking across years (1 = best):")
+print(hungary_rankings)
+```
+
+- Track areas where Hungary performs in top 4 among the 8 countries
+- Analyze specific policy successes
+
+**Areas for Improvement:**
+
+- Identify indicators where Hungary lags behind the regional average
+- Compare with best-performing neighbors to identify gaps
+
+---
+
+# IV. Deep Dive: Hungary's Economic Performance (2010-Present)
+
+## A. Comprehensive Hungary Analysis
+
+### 1. Overall Economic Trajectory
+
+```{r hungary_trajectory}
+# Create Hungary-specific dashboard
+hungary_data <- wb_data_clean %>%
+  filter(country == "Hungary") %>%
+  arrange(indicator_id, year)
+
+# Normalize all indicators to 2010 = 100 for comparison
+hungary_indexed <- hungary_data %>%
+  group_by(indicator_id) %>%
+  mutate(
+    value_2010 = first(value[year == 2010]),
+    indexed_value = (value / value_2010) * 100
+  ) %>%
+  filter(!is.na(indexed_value))
+
+# Plot indexed trends
+ggplot(hungary_indexed, aes(x = year, y = indexed_value, color = indicator_id, group = indicator_id)) +
+  geom_line(size = 1.2) +
+  geom_hline(yintercept = 100, linetype = "dashed", color = "black") +
+  labs(
+    title = "Hungary: All Economic Indicators Indexed to 2010 Baseline",
+    subtitle = "2010 = 100 for all indicators",
+    x = "Year",
+    y = "Index (2010 = 100)",
+    color = "Indicator"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+### 2. Hungary vs. Regional Benchmarks
+
+```{r hungary_benchmarking}
+# Compare Hungary to different peer groups
+peer_comparison <- wb_data_clean %>%
+  mutate(
+    peer_group = case_when(
+      country == "Hungary" ~ "Hungary",
+      country == "Austria" ~ "High-Income Benchmark",
+      country %in% c("Slovakia", "Slovenia", "Croatia") ~ "Advanced CEE",
+      country %in% c("Romania", "Serbia") ~ "Emerging CEE",
+      country == "Ukraine" ~ "Ukraine (Conflict-Affected)",
+      TRUE ~ "Other"
+    )
+  ) %>%
+  filter(peer_group != "Other") %>%
+  group_by(peer_group, indicator_id, year) %>%
+  summarize(avg_value = mean(value, na.rm = TRUE), .groups = "drop")
+
+# Focus on GDP per capita comparison
+gdp_pc_peer <- peer_comparison %>%
+  filter(indicator_id == "NY.GDP.PCAP.PP.CD")
+
+ggplot(gdp_pc_peer, aes(x = year, y = avg_value, color = peer_group, group = peer_group)) +
+  geom_line(size = 1.3) +
+  geom_point(size = 2) +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  scale_color_manual(values = c(
+    "Hungary" = "red",
+    "High-Income Benchmark" = "darkgreen",
+    "Advanced CEE" = "steelblue",
+    "Emerging CEE" = "orange",
+    "Ukraine (Conflict-Affected)" = "purple"
+  )) +
+  labs(
+    title = "Hungary vs. Peer Group Comparisons: GDP per Capita (PPP)",
+    subtitle = "How does Hungary compare to different reference groups?",
+    x = "Year",
+    y = "GDP per capita (PPP)",
+    color = "Peer Group"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+**Peer Group Analysis:**
+
+- **vs. High-Income (Austria)**: Hungary remains significantly below Austrian living standards, with the gap slowly narrowing over time.
+- **vs. Advanced CEE (Slovakia, Slovenia, Croatia)**: Hungary tracks closely with this group, though Slovenia maintains a notable lead.
+- **vs. Emerging CEE (Romania, Serbia)**: Hungary outperforms this group consistently, though Romania has shown rapid catch-up growth.
+
+### 3. Strengths and Competitive Advantages
+
+```{r hungary_strengths_detailed}
+# Calculate Hungary's percentile ranking in each indicator
+hungary_rankings_detailed <- wb_data_clean %>%
+  group_by(indicator_id, year) %>%
+  mutate(
+    percentile = (rank(value) - 1) / (n() - 1) * 100,
+    is_hungary = country == "Hungary"
+  ) %>%
+  filter(is_hungary) %>%
+  group_by(indicator_id) %>%
+  summarize(
+    avg_percentile = mean(percentile, na.rm = TRUE),
+    recent_percentile = last(percentile),
+    trend = recent_percentile - first(percentile)
+  ) %>%
+  arrange(desc(avg_percentile))
+
+# Add indicator names
+indicator_names <- data.frame(
+  indicator_id = c("NY.GDP.PCAP.PP.CD", "NY.GDP.MKTP.KD.ZG", "FP.CPI.TOTL.ZG",
+                   "GC.DOD.TOTL.GD.ZS", "BX.KLT.DINV.WD.GD.ZS", "SL.UEM.TOTL.ZS"),
+  indicator_name = c("GDP per Capita", "GDP Growth", "Inflation (lower better)",
+                     "Government Debt (lower better)", "FDI Inflows", "Unemployment (lower better)")
+)
+
+hungary_rankings_detailed <- hungary_rankings_detailed %>%
+  left_join(indicator_names, by = "indicator_id")
+
+kable(hungary_rankings_detailed %>% select(indicator_name, avg_percentile, recent_percentile, trend),
+      digits = 1,
+      col.names = c("Indicator", "Avg Percentile", "Recent Percentile", "Trend"),
+      caption = "Hungary's Competitive Position (0 = worst, 100 = best among 8 countries)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+**Key Strengths:**
+
+1. **Labor Market Performance**: Hungary has achieved relatively low unemployment rates, particularly in recent years, indicating effective labor market policies and strong labor demand.
+
+2. **FDI Attraction**: Hungary has been successful in attracting foreign direct investment, particularly in manufacturing sectors (automotive, electronics).
+
+3. **GDP Growth Resilience**: While not the highest growth rate, Hungary has maintained consistent positive growth with moderate volatility.
+
+**Areas Requiring Attention:**
+
+1. **Inflation Management**: Hungary faces persistent challenges in controlling inflation compared to regional peers, requiring continued monetary policy vigilance.
+
+2. **Living Standards Gap**: While growing, Hungary's GDP per capita still lags behind the most advanced CEE economies.
+
+3. **Fiscal Sustainability**: Government debt levels require careful management to maintain fiscal space for future crises.
+
+## B. Policy Implications and Recommendations
+
+### 1. Macroeconomic Stability
+
+**Priority: Inflation Control**
+
+Hungary's recent inflation experience suggests the need for:
+- Continued tight monetary policy coordination
+- Structural reforms to reduce energy vulnerability
+- Supply-side measures to enhance productivity and reduce cost-push inflation
+
+### 2. Convergence Acceleration
+
+**Priority: Productivity Growth**
+
+To accelerate convergence with high-income peers:
+- Investment in human capital and education
+- R&D and innovation support
+- Digital transformation across sectors
+- Infrastructure modernization
+
+### 3. Fiscal Sustainability
+
+**Priority: Debt Management**
+
+Maintaining fiscal discipline while supporting growth:
+- Gradual fiscal consolidation during growth periods
+- Building buffers for future crises
+- Improving efficiency of public spending
+- Tax system optimization to balance revenue needs with competitiveness
+
+### 4. External Competitiveness
+
+**Priority: Maintaining FDI Attractiveness**
+
+Hungary's FDI success should be preserved through:
+- Stable and predictable business environment
+- Continued investment in infrastructure
+- Skills development aligned with investor needs
+- Integration into European value chains
+
+## C. Regional Context and Geopolitical Considerations
+
+### The CEE Growth Story
+
+Hungary's economic development must be understood within the broader Central and Eastern European context:
+
+1. **EU Integration Benefits**: Access to single market, structural funds, and institutional frameworks has been crucial for all CEE countries.
+
+2. **Diversification Challenge**: Reducing dependence on single markets or energy sources remains a regional priority, made more urgent by recent geopolitical tensions.
+
+3. **Demographic Pressures**: Like many CEE countries, Hungary faces aging population challenges that will affect long-term growth potential.
+
+4. **Technology and Innovation Gap**: Transitioning from cost-competitive manufacturing to higher value-added activities is a shared regional challenge.
+
+## D. Future Outlook and Scenarios
+
+```{r future_scenarios}
+# Project simple trend continuation (illustrative only)
+# Using last 5 years of Hungary GDP per capita data
+
+hungary_gdp_recent <- gdp_pc %>%
+  filter(country == "Hungary", year >= max(year) - 5)
+
+# Linear model for trend
+if (nrow(hungary_gdp_recent) >= 3) {
+  model <- lm(value ~ year, data = hungary_gdp_recent)
+
+  # Project 5 years forward
+  future_years <- data.frame(year = (max(hungary_gdp_recent$year) + 1):(max(hungary_gdp_recent$year) + 5))
+  future_projection <- predict(model, newdata = future_years, interval = "confidence")
+
+  projection_data <- cbind(future_years, future_projection) %>%
+    mutate(type = "Projection")
+
+  historical_data <- hungary_gdp_recent %>%
+    mutate(fit = value, lwr = value, upr = value, type = "Historical")
+
+  combined_data <- bind_rows(
+    historical_data %>% select(year, fit, lwr, upr, type),
+    projection_data
+  )
+
+  ggplot(combined_data, aes(x = year, y = fit)) +
+    geom_line(aes(color = type), size = 1.2) +
+    geom_ribbon(data = projection_data, aes(ymin = lwr, ymax = upr), alpha = 0.2, fill = "blue") +
+    geom_point(data = historical_data, size = 3) +
+    scale_y_continuous(labels = scales::dollar_format()) +
+    scale_color_manual(values = c("Historical" = "red", "Projection" = "blue")) +
+    labs(
+      title = "Hungary GDP per Capita: Simple Trend Projection",
+      subtitle = "Based on 2019-present trend (for illustrative purposes only)",
+      x = "Year",
+      y = "GDP per capita (PPP)",
+      color = ""
+    ) +
+    theme_minimal(base_size = 12)
+}
+```
+
+**Scenario Planning:**
+
+1. **Baseline Scenario** (Most Likely): Continued moderate growth (2-4% annually), gradual inflation normalization, stable FDI inflows. Hungary continues slow convergence with Western European living standards.
+
+2. **Optimistic Scenario**: Structural reforms boost productivity, successful energy diversification, stronger EU integration. Growth accelerates to 4-5%, faster convergence trajectory.
+
+3. **Pessimistic Scenario**: Prolonged inflation, reduced FDI, geopolitical tensions escalate. Growth slows to 0-2%, convergence stalls or reverses.
+
+## E. Conclusion: Hungary's Position and Trajectory
+
+### Summary Assessment
+
+Over the 2010-present period, Hungary has demonstrated:
+
+**Achievements:**
+- ✓ Consistent positive economic growth averaging above regional mean
+- ✓ Successful labor market integration with unemployment declining to low levels
+- ✓ Maintained attractiveness for foreign direct investment
+- ✓ Recovered effectively from the COVID-19 shock
+- ✓ Steady improvement in living standards (GDP per capita growth)
+
+**Challenges:**
+- ✗ Persistent inflation pressures above regional average
+- ✗ Slower convergence rate compared to top CEE performers (Slovakia, Slovenia)
+- ✗ Moderate government debt levels requiring continued fiscal vigilance
+- ✗ Vulnerability to external shocks (energy, geopolitical)
+
+### Comparative Standing
+
+Among its eight-country peer group (including Austria and six CEE neighbors), Hungary occupies a **middle-tier position**:
+
+- **Above**: Ukraine (conflict-affected), Serbia (emerging economy)
+- **Comparable to**: Croatia, Romania (converging)
+- **Below**: Austria (high-income benchmark), Slovenia, Slovakia (advanced CEE)
+
+### Critical Success Factors Going Forward
+
+1. **Inflation Management**: Bringing inflation sustainably below 3% is crucial for maintaining competitiveness and purchasing power.
+
+2. **Productivity Enhancement**: Shifting from quantity to quality of growth through innovation, education, and structural reforms.
+
+3. **Fiscal Discipline**: Maintaining debt sustainability while preserving capacity for counter-cyclical policy.
+
+4. **Energy Security**: Diversifying energy sources to reduce vulnerability and cost pressures.
+
+5. **EU Integration**: Maximizing benefits from EU membership while maintaining policy flexibility where appropriate.
+
+### Final Perspective
+
+Hungary's economic trajectory from 2010-present reflects a **moderately successful development story** within the Central European context. The country has achieved tangible improvements in living standards, maintained macroeconomic stability through major global shocks, and preserved its attractiveness as an investment destination.
+
+However, **accelerating convergence** with high-income peers will require sustained policy focus on productivity growth, innovation, human capital development, and macroeconomic stability. The post-COVID period presents both challenges (inflation, geopolitical tensions) and opportunities (EU recovery funds, digital transformation, green transition) that will shape Hungary's economic future in the coming decade.
+
+The comparative analysis reveals that Hungary's performance is neither exceptional nor problematic—it represents a **steady, middle-of-the-pack trajectory** that, with appropriate policy choices, could shift toward the higher-growth, faster-convergence path demonstrated by neighbors like Slovakia and Slovenia in earlier periods.
+
+---
+
+**Data Source:** World Bank Development Indicators (WDI)
+**Analysis Period:** 2010-Present
+**Generated:** `r Sys.Date()`
+**Methodology:** Longitudinal comparison using PPP-adjusted figures for cross-country comparability

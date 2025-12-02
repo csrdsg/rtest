@@ -1,0 +1,576 @@
+---
+title: "A GDP egy főre és a vállalkozásindítás időigénye közötti kapcsolat"
+author: "Házi feladat elemzés"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    theme: cosmo
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 10, fig.height = 6)
+```
+
+# Bevezetés
+
+Ez az elemzés az országok jövedelemtermelése (egy főre jutó GDP, PPP) és a vállalkozásindítás könnyedsége (a szükséges napokban mérve) közötti kapcsolatot vizsgálja. Különböző funkcionális formákat fogunk megvizsgálni, és kezelni fogjuk a szélsőséges értékeket, hogy megtaláljuk a legjobb regressziós modellt.
+
+**Megjegyzés:** A Világbank Doing Business projektjét 2021 szeptemberében megszüntették. Azonban a történeti adatok továbbra is elérhetők a Doing Business adatbázison keresztül (source=14) a Világbank API-ban. 2019-es adatokat használunk (a legfrissebb elérhető év), hogy valódi keresztmetszeti elemzést biztosítsunk, ahogy a feladat megköveteli.
+
+# 1. Adatgyűjtés
+
+```{r load-packages}
+# CRAN tükör beállítása
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+# Csomagok telepítése szükség esetén
+if (!require("WDI")) install.packages("WDI")
+if (!require("tidyverse")) install.packages("tidyverse")
+if (!require("car")) install.packages("car")
+if (!require("MASS")) install.packages("MASS")
+if (!require("broom")) install.packages("broom")
+if (!require("knitr")) install.packages("knitr")
+if (!require("kableExtra")) install.packages("kableExtra")
+if (!require("jsonlite")) install.packages("jsonlite")
+
+library(WDI)
+library(tidyverse)
+library(car)
+library(MASS)
+library(broom)
+library(knitr)
+library(kableExtra)
+library(jsonlite)
+```
+
+```{r download-data}
+# Indikátorok keresése
+# Egy főre jutó GDP, PPP (állandó 2021 nemzetközi $): NY.GDP.PCAP.PP.KD
+# Vállalkozásindításhoz szükséges idő (napok): IC.REG.DURS (Doing Business adatbázisból, source=14)
+
+# GDP adatok letöltése WDI-vel csak 2019-re (keresztmetszeti)
+gdp_data <- WDI(indicator = "NY.GDP.PCAP.PP.KD",
+                start = 2019, end = 2019, extra = TRUE)
+
+# Egyedi függvény a Doing Business adatok közvetlen lekérdezéséhez az API-ból source=14 paraméterrel
+# (A WDI csomag nem támogatja az archivált DB adatokhoz szükséges source paramétert)
+fetch_db_data <- function(indicator, start_year, end_year) {
+  url <- paste0(
+    "https://api.worldbank.org/v2/country/all/indicator/", indicator,
+    "?source=14&format=json&per_page=20000&date=", start_year, ":", end_year
+  )
+
+  cat("Adatok lekérése innen:", url, "\n")
+  data_json <- fromJSON(url)
+  data_df <- data_json[[2]]
+
+  # Kinyerés és tisztítás
+  result <- data.frame(
+    country = data_df$country$value,
+    iso3c = data_df$countryiso3code,
+    year = as.numeric(data_df$date),
+    value = as.numeric(data_df$value)
+  )
+
+  return(result)
+}
+
+# Vállalkozásindítási idő adatok lekérése a Doing Business adatbázisból
+cat("Vállalkozásindítási idő adatok letöltése a Doing Business archívumból...\n")
+business_data <- fetch_db_data("IC.REG.DURS", 2019, 2019)
+
+# Adatkészletek egyesítése
+data_raw <- gdp_data %>%
+  dplyr::select(country, iso3c, year, gdp_ppp = NY.GDP.PCAP.PP.KD, region, income) %>%
+  inner_join(
+    business_data %>%
+      rename(time_business = value) %>%
+      dplyr::select(iso3c, year, time_business),
+    by = c("iso3c", "year")
+  )
+
+# Aggregátumok eltávolítása (csak egyedi országok megtartása)
+# Azok a sorok szűrése, ahol a régió "Aggregates" vagy a jövedelem "Aggregates"
+# Ez valódi keresztmetszeti adatkészletet hoz létre ország szerinti egy megfigyeléssel
+data_clean <- data_raw %>%
+  filter(region != "Aggregates",
+         !is.na(gdp_ppp),
+         !is.na(time_business),
+         time_business > 0,  # Nulla vagy negatív értékek eltávolítása
+         gdp_ppp > 0)
+
+# Összefoglaló megjelenítése
+cat("\nAdatok összefoglalója:\n")
+cat("Országok száma:", nrow(data_clean), "\n")
+cat("Év:", unique(data_clean$year), "\n\n")
+
+# Az első néhány megfigyelés megjelenítése
+kable(head(data_clean, 10),
+      caption = "Az első 10 megfigyelés az adatkészletből") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+**Miért ez a megközelítés?** A WDI csomagot használjuk a GDP adatokhoz, és közvetlenül elérjük a Doing Business adatbázist (source=14) a Világbank API-n keresztül a vállalkozásindítási idő adatokhoz. 2019-es adatokat használunk (a legfrissebb elérhető év), hogy valódi keresztmetszeti adatkészletet hozzunk létre ország szerinti egy megfigyeléssel. Csak az egyedi országokra szűrünk (kizárva a regionális/jövedelmi aggregátumokat). Ez a megközelítés összhangban van a feladat követelményeivel, és biztosítja, hogy a megfigyelések függetlenek legyenek.
+
+# 2. Feltáró adatelemzés
+
+```{r summary-stats}
+# Összefoglaló statisztikák
+summary_stats <- data_clean %>%
+  dplyr::select(gdp_ppp, time_business) %>%
+  summary()
+
+print(summary_stats)
+
+# Részletes statisztikák
+data_clean %>%
+  dplyr::select(gdp_ppp, time_business) %>%
+  summarise(
+    across(everything(),
+           list(mean = mean,
+                sd = sd,
+                min = min,
+                q25 = ~quantile(., 0.25),
+                median = median,
+                q75 = ~quantile(., 0.75),
+                max = max,
+                n = ~sum(!is.na(.))),
+           .names = "{.col}_{.fn}")
+  ) %>%
+  pivot_longer(everything()) %>%
+  separate(name, into = c("variable", "statistic"), sep = "_(?=[^_]+$)") %>%
+  pivot_wider(names_from = statistic, values_from = value) %>%
+  kable(caption = "Részletes összefoglaló statisztikák", digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+```{r scatter-plot}
+# Alapvető szórásdiagram
+ggplot(data_clean, aes(x = time_business, y = gdp_ppp)) +
+  geom_point(alpha = 0.3, size = 1.5, color = "steelblue") +
+  geom_smooth(method = "lm", se = TRUE, color = "red", linetype = "dashed") +
+  labs(title = "Egy főre jutó GDP és a vállalkozásindítás ideje",
+       subtitle = "Lineáris kapcsolat (2019 keresztmetszeti adatok)",
+       x = "Vállalkozásindításhoz szükséges idő (napok)",
+       y = "Egy főre jutó GDP, PPP (állandó 2021 nemzetközi $)") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 14))
+```
+
+**Megfigyelés:** A szórásdiagram általában negatív kapcsolatot mutat (több idő → alacsonyabb GDP), ami gazdasági szempontból értelmes. A vállalkozásalapítás bürokratikus akadályainak korrelálniuk kellene az alacsonyabb gazdasági teljesítménnyel. Jelentős szórás tapasztalható, és potenciális kiugró értékek is vannak nagyon magas indítási idővel. A kapcsolat nem lineárisnak tűnik.
+
+```{r distribution-plots, fig.height=8}
+# Eloszlási grafikonok
+par(mfrow = c(2, 2))
+
+# GDP hisztogramja
+hist(data_clean$gdp_ppp, breaks = 30, col = "lightblue",
+     main = "Egy főre jutó GDP eloszlása", xlab = "Egy főre jutó GDP (PPP)")
+
+# Log GDP hisztogramja
+hist(log(data_clean$gdp_ppp), breaks = 30, col = "lightgreen",
+     main = "Log(Egy főre jutó GDP) eloszlása", xlab = "log(Egy főre jutó GDP)")
+
+# Vállalkozásindítási idő hisztogramja
+hist(data_clean$time_business, breaks = 30, col = "lightcoral",
+     main = "Vállalkozásindítási idő eloszlása", xlab = "Napok")
+
+# Log vállalkozásindítási idő hisztogramja
+hist(log(data_clean$time_business), breaks = 30, col = "lightyellow",
+     main = "Log(Vállalkozásindítási idő) eloszlása", xlab = "log(Napok)")
+```
+
+**Miért ellenőrizzük az eloszlásokat?** A változók eloszlásának megértése segít eldönteni a megfelelő transzformációkat. Mindkét változó jobbra ferdültnek tűnik, ami azt sugallja, hogy logaritmikus transzformációk megfelelőek lehetnek. Ez gyakori a gazdasági adatoknál, ahol a százalékos változások értelmesebek, mint az abszolút változások.
+
+# 3. Különböző funkcionális formák tesztelése
+
+Négy különböző funkcionális formát fogunk tesztelni:
+1. Lineáris: $y = \beta_0 + \beta_1 x$
+2. Log-Log: $\log(y) = \beta_0 + \beta_1 \log(x)$
+3. Log-Lineáris: $\log(y) = \beta_0 + \beta_1 x$
+4. Lineáris-Log: $y = \beta_0 + \beta_1 \log(x)$
+
+```{r functional-forms}
+# 1. modell: Lineáris
+model_linear <- lm(gdp_ppp ~ time_business, data = data_clean)
+
+# 2. modell: Log-Log
+model_loglog <- lm(log(gdp_ppp) ~ log(time_business), data = data_clean)
+
+# 3. modell: Log-Lineáris
+model_loglin <- lm(log(gdp_ppp) ~ time_business, data = data_clean)
+
+# 4. modell: Lineáris-Log
+model_linlog <- lm(gdp_ppp ~ log(time_business), data = data_clean)
+
+# Modellek összehasonlítása
+comparison <- data.frame(
+  Modell = c("Lineáris", "Log-Log", "Log-Lineáris", "Lineáris-Log"),
+  R_négyzet = c(summary(model_linear)$r.squared,
+                summary(model_loglog)$r.squared,
+                summary(model_loglin)$r.squared,
+                summary(model_linlog)$r.squared),
+  Korrigált_R_négyzet = c(summary(model_linear)$adj.r.squared,
+                          summary(model_loglog)$adj.r.squared,
+                          summary(model_loglin)$adj.r.squared,
+                          summary(model_linlog)$adj.r.squared),
+  AIC = c(AIC(model_linear),
+          NA,  # AIC nem közvetlenül összehasonlítható különböző függő változókra
+          NA,
+          AIC(model_linlog)),
+  RMSE = c(sqrt(mean(residuals(model_linear)^2)),
+           sqrt(mean(residuals(model_loglog)^2)),
+           sqrt(mean(residuals(model_loglin)^2)),
+           sqrt(mean(residuals(model_linlog)^2)))
+)
+
+kable(comparison, digits = 3,
+      caption = "Funkcionális formák összehasonlítása") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+```{r visualize-fits, fig.height=10}
+# Mind a négy modell vizualizációja
+par(mfrow = c(2, 2))
+
+# 1. modell: Lineáris
+plot(data_clean$time_business, data_clean$gdp_ppp,
+     main = "1. modell: Lineáris", xlab = "Idő (napok)", ylab = "Egy főre jutó GDP",
+     pch = 16, col = rgb(0, 0, 1, 0.3), cex = 0.5)
+abline(model_linear, col = "red", lwd = 2)
+
+# 2. modell: Log-Log
+plot(log(data_clean$time_business), log(data_clean$gdp_ppp),
+     main = "2. modell: Log-Log", xlab = "log(Idő)", ylab = "log(Egy főre jutó GDP)",
+     pch = 16, col = rgb(0, 1, 0, 0.3), cex = 0.5)
+abline(model_loglog, col = "red", lwd = 2)
+
+# 3. modell: Log-Lineáris
+plot(data_clean$time_business, log(data_clean$gdp_ppp),
+     main = "3. modell: Log-Lineáris", xlab = "Idő (napok)", ylab = "log(Egy főre jutó GDP)",
+     pch = 16, col = rgb(1, 0, 0, 0.3), cex = 0.5)
+abline(model_loglin, col = "red", lwd = 2)
+
+# 4. modell: Lineáris-Log
+plot(log(data_clean$time_business), data_clean$gdp_ppp,
+     main = "4. modell: Lineáris-Log", xlab = "log(Idő)", ylab = "Egy főre jutó GDP",
+     pch = 16, col = rgb(1, 0, 1, 0.3), cex = 0.5)
+abline(model_linlog, col = "red", lwd = 2)
+```
+
+**Miért tesztelünk több formát?** A gazdasági kapcsolatok ritkán lineárisak. A log-log forma különösen hasznos, mivel állandó rugalmassági interpretációt biztosít. A vizuális vizsgálat azt sugallja, hogy a logaritmikus transzformációk javítják az illeszkedést.
+
+# 4. Diagnosztikai elemzés: Szélsőséges értékek és tőkeáttétel
+
+Koncentráljunk a log-log modellre (amely a legjobb illeszkedésnek tűnik), és vizsgáljuk meg a befolyásos megfigyeléseket.
+
+```{r diagnostics, fig.height=10}
+# Diagnosztikai grafikonok a log-log modellhez
+par(mfrow = c(2, 2))
+plot(model_loglog)
+```
+
+```{r influence-measures}
+# Befolyási mutatók számítása
+influence_data <- data_clean %>%
+  mutate(
+    log_gdp = log(gdp_ppp),
+    log_time = log(time_business),
+    residuals = residuals(model_loglog),
+    studentized_resid = rstudent(model_loglog),
+    cooks_d = cooks.distance(model_loglog),
+    leverage = hatvalues(model_loglog),
+    dffits_val = dffits(model_loglog)
+  )
+
+# Befolyásos megfigyelések azonosítása több kritérium alapján
+influential <- influence_data %>%
+  mutate(
+    high_leverage = leverage > 2 * 2 / nrow(data_clean),  # 2p/n küszöb
+    high_cooks = cooks_d > 4 / nrow(data_clean),  # 4/n küszöb
+    outlier_resid = abs(studentized_resid) > 2.5,
+    high_dffits = abs(dffits_val) > 2 * sqrt(2 / nrow(data_clean))
+  ) %>%
+  filter(high_leverage | high_cooks | outlier_resid | high_dffits)
+
+cat("Potenciálisan befolyásos megfigyelések száma:", nrow(influential), "\n\n")
+
+if(nrow(influential) > 0) {
+  influential %>%
+    dplyr::select(country, year, time_business, gdp_ppp, cooks_d, leverage,
+           studentized_resid, high_leverage, high_cooks, outlier_resid) %>%
+    arrange(desc(cooks_d)) %>%
+    kable(digits = 3, caption = "Befolyásos megfigyelések") %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+}
+```
+
+```{r influence-plot}
+# Befolyási ábra
+influencePlot(model_loglog, main = "Befolyási ábra (Log-Log modell)",
+              sub = "A kör mérete arányos a Cook-távolsággal")
+
+# Országnevek hozzáadása a befolyásos pontokhoz
+influential_indices <- which(influence_data$cooks_d > 4/nrow(data_clean) |
+                             abs(influence_data$studentized_resid) > 2.5)
+if(length(influential_indices) > 0) {
+  text(influence_data$leverage[influential_indices],
+       influence_data$studentized_resid[influential_indices],
+       labels = data_clean$country[influential_indices],
+       pos = 4, cex = 0.7, col = "red")
+}
+```
+
+**Miért vizsgáljuk a befolyást?** A magas tőkeáttételű pontok és a kiugró értékek aránytalanul befolyásolhatják a regressziós eredményeket. Meg kell vizsgálnunk, hogy ezek a megfigyelések jogos adatpontok-e vagy hibák, és döntenünk kell a kezelésükről.
+
+```{r bubble-plot}
+# Buborékdiagram a Cook-távolsággal
+ggplot(influence_data, aes(x = log_time, y = log_gdp)) +
+  geom_point(aes(size = cooks_d, color = cooks_d > 4/nrow(data_clean)), alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "darkblue") +
+  scale_color_manual(values = c("steelblue", "red"),
+                     labels = c("Normális", "Magas Cook-távolság")) +
+  labs(title = "Log-Log modell Cook-távolsággal",
+       x = "log(Vállalkozásindítási idő)",
+       y = "log(Egy főre jutó GDP)",
+       size = "Cook-távolság",
+       color = "Befolyás") +
+  theme_minimal()
+```
+
+# 5. Modell-összehasonlítás: Befolyásos pontokkal és anélkül
+
+```{r robust-models}
+# Valóban problémás befolyásos pontok azonosítása
+# Kombinált kritériumok használata: magas Cook-távolság ÉS (magas tőkeáttétel VAGY kiugró érték)
+problematic <- influence_data %>%
+  filter(cooks_d > 4/nrow(data_clean) & (leverage > 2*2/nrow(data_clean) | abs(studentized_resid) > 2.5))
+
+cat("Befolyási kritériumok alapján eltávolított megfigyelések:", nrow(problematic), "\n")
+if(nrow(problematic) > 0) {
+  print(problematic %>% dplyr::select(country, year, time_business, gdp_ppp, cooks_d, leverage, studentized_resid))
+}
+
+# Modell illesztése a problémás megfigyelések nélkül
+if(nrow(problematic) > 0) {
+  data_robust <- influence_data %>%
+    filter(!(country %in% problematic$country))
+} else {
+  data_robust <- influence_data
+}
+
+model_loglog_robust <- lm(log_gdp ~ log_time, data = data_robust)
+
+# Robusztus regresszió kipróbálása alternatívaként
+model_robust_regression <- rlm(log_gdp ~ log_time, data = influence_data)
+
+# Minden log-log specifikáció összehasonlítása
+comparison_detailed <- data.frame(
+  Modell = c("Log-Log (Teljes)", "Log-Log (Kiugró értékek eltávolítva)", "Robusztus regresszió"),
+  N = c(nrow(data_clean), nrow(data_robust), nrow(data_clean)),
+  R_négyzet = c(summary(model_loglog)$r.squared,
+                summary(model_loglog_robust)$r.squared,
+                NA),
+  Korrigált_R_négyzet = c(summary(model_loglog)$adj.r.squared,
+                          summary(model_loglog_robust)$adj.r.squared,
+                          NA),
+  Együttható_Tengelymetszet = c(coef(model_loglog)[1],
+                                 coef(model_loglog_robust)[1],
+                                 coef(model_robust_regression)[1]),
+  Együttható_Meredekség = c(coef(model_loglog)[2],
+                             coef(model_loglog_robust)[2],
+                             coef(model_robust_regression)[2]),
+  RMSE = c(sqrt(mean(residuals(model_loglog)^2)),
+           sqrt(mean(residuals(model_loglog_robust)^2)),
+           sqrt(mean(residuals(model_robust_regression)^2)))
+)
+
+kable(comparison_detailed, digits = 4,
+      caption = "Log-Log modell specifikációk összehasonlítása") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+**Döntési indoklás:** Három megközelítést hasonlítunk össze:
+1. Teljes adatkészlet
+2. Nagyon befolyásos pontokkal eltávolított adatkészlet
+3. Robusztus regresszió (automatikusan csökkenti a kiugró értékek súlyát)
+
+A robusztus megközelítés segít megvizsgálni, hogy következtetéseinket néhány szélsőséges megfigyelés határozza-e meg.
+
+# 6. Végső modellválasztás és értelmezés
+
+```{r final-model}
+# Végső modell kiválasztása (robusztus megközelítéssel a valóban problémás pontok eltávolítására)
+final_model <- model_loglog_robust
+
+# Részletes összefoglaló
+summary_final <- summary(final_model)
+print(summary_final)
+
+# Konfidencia intervallumok
+conf_int <- confint(final_model)
+kable(conf_int, digits = 4,
+      caption = "95%-os konfidencia intervallumok az együtthatókhoz") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+# Rendezett kimenet
+tidy_final <- tidy(final_model, conf.int = TRUE)
+kable(tidy_final, digits = 4,
+      caption = "Végső modell együtthatói") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+```{r final-diagnostics, fig.height=10}
+# Diagnosztikai grafikonok a végső modellhez
+par(mfrow = c(2, 2))
+plot(final_model)
+```
+
+```{r final-visualization}
+# Végső modell vizualizációja
+ggplot(data_robust, aes(x = log_time, y = log_gdp)) +
+  geom_point(alpha = 0.6, size = 2, color = "steelblue") +
+  geom_smooth(method = "lm", se = TRUE, color = "red", fill = "pink", alpha = 0.3) +
+  labs(title = "Végső modell: Log-Log kapcsolat",
+       subtitle = paste0("log(GDP) = ", round(coef(final_model)[1], 3),
+                        " + ", round(coef(final_model)[2], 3), " * log(Idő)"),
+       x = "log(Vállalkozásindításhoz szükséges idő)",
+       y = "log(Egy főre jutó GDP, PPP)",
+       caption = paste0("N = ", nrow(data_robust),
+                       ", R² = ", round(summary_final$r.squared, 3),
+                       ", Korrigált R² = ", round(summary_final$adj.r.squared, 3))) +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 14),
+        plot.subtitle = element_text(size = 11))
+```
+
+# 7. Eredmények értelmezése
+
+## Modell specifikáció
+
+A végső modellünk:
+
+$$\log(\text{Egy főre jutó GDP}) = \beta_0 + \beta_1 \log(\text{Vállalkozásindítási idő})$$
+
+Ahol:
+- $\beta_0$ = `r round(coef(final_model)[1], 4)` (Tengelymetszet)
+- $\beta_1$ = `r round(coef(final_model)[2], 4)` (Meredekség/Rugalmasság)
+- R² = `r round(summary_final$r.squared, 4)`
+- Korrigált R² = `r round(summary_final$adj.r.squared, 4)`
+- N = `r nrow(data_robust)` ország (2019 keresztmetszeti adatok)
+
+## Statisztikai szignifikancia
+
+```{r interpretation-stats}
+coef_estimate <- coef(final_model)[2]
+coef_se <- summary_final$coefficients[2, 2]
+coef_tstat <- summary_final$coefficients[2, 3]
+coef_pval <- summary_final$coefficients[2, 4]
+
+cat("Meredekség együttható (rugalmasság):", round(coef_estimate, 4), "\n")
+cat("Standard hiba:", round(coef_se, 4), "\n")
+cat("t-statisztika:", round(coef_tstat, 4), "\n")
+cat("p-érték:", format.pval(coef_pval, digits = 4), "\n\n")
+
+if(coef_pval < 0.001) {
+  cat("A kapcsolat statisztikailag erősen szignifikáns (p < 0.001).\n")
+} else if(coef_pval < 0.01) {
+  cat("A kapcsolat statisztikailag nagyon szignifikáns (p < 0.01).\n")
+} else if(coef_pval < 0.05) {
+  cat("A kapcsolat statisztikailag szignifikáns (p < 0.05).\n")
+} else {
+  cat("A kapcsolat nem szignifikáns a hagyományos szinteken.\n")
+}
+```
+
+## Gazdasági értelmezés
+
+**1. Rugalmassági értelmezés:**
+
+A log-log modellben a meredekség együttható a rugalmasságot jelenti. A becsült `r round(coef_estimate, 4)` együttható azt jelenti:
+
+- A vállalkozásindításhoz szükséges idő **1%-os növekedése** körülbelül **`r round(coef_estimate, 2)`%-os változással** jár az egy főre jutó GDP-ben.
+- Mivel az együttható `r ifelse(coef_estimate < 0, "negatív", "pozitív")`, ez `r ifelse(coef_estimate < 0, "inverz", "pozitív")` kapcsolatot jelez.
+
+**2. Gyakorlati értelmezés:**
+
+```{r practical-interpretation}
+# Példa: Mi történik, ha a vállalkozásindítási idő 20%-kal csökken?
+pct_change_time <- -20  # 20%-os csökkenés
+pct_change_gdp <- pct_change_time * coef_estimate
+cat("Ha a vállalkozásindítási idő 20%-kal csökken,\n")
+cat("az egy főre jutó GDP várhatóan körülbelül",
+    round(pct_change_gdp, 2), "%-kal változik\n\n")
+
+# Példa: Két hipotetikus ország összehasonlítása
+time1 <- 10  # A ország: 10 nap
+time2 <- 30  # B ország: 30 nap
+ratio_time <- time2 / time1
+expected_gdp_ratio <- ratio_time^coef_estimate
+cat("Ha az A országban", time1, "napba telik vállalkozást indítani,\n")
+cat("a B országban pedig", time2, "napba,\n")
+cat("a B ország egy főre jutó GDP-je várhatóan körülbelül",
+    round((expected_gdp_ratio - 1) * 100, 1), "%-kal tér el az A országétól,\n")
+cat("egyebek változatlansága mellett.\n")
+```
+
+**3. Modell illeszkedése:**
+
+- Az R² = `r round(summary_final$r.squared, 3)` azt jelzi, hogy a log(egy főre jutó GDP) varianciájának körülbelül `r round(summary_final$r.squared * 100, 1)`%-át magyarázza a log(vállalkozásindítási idő).
+- Bár ez értelmes kapcsolatot mutat, azt is jelzi, hogy sok más tényező is hozzájárul a GDP-különbségekhez az országok között.
+
+**4. Funkcionális forma indoklása:**
+
+A log-log specifikációt választottuk, mert:
+
+1. **Elméleti**: A gazdasági kapcsolatok gyakran állandó rugalmasságot mutatnak, nem állandó meredekséget
+2. **Statisztikai**: A log-log modell jó illeszkedést mutatott közelítőleg normális reziduálisokkal
+3. **Gyakorlati**: Mindkét változó jobbra ferdült; a log transzformáció normalizálja az eloszlásokat
+4. **Értelmezhetőség**: A rugalmassági értelmezés intuitív a szakpolitikai elemzéshez
+
+**5. Befolyásos megfigyelések kezelése:**
+
+`r ifelse(nrow(problematic) > 0, nrow(problematic), "Nem")` azonosítottunk erősen problémás befolyásos megfigyelés(eke)t kombinált kritériumok alapján (magas Cook-távolság ÉS akár magas tőkeáttétel, akár szélsőséges reziduálisok). Ezeket eltávolítottuk a végső modellből, hogy robusztus következtetéseket biztosítsunk. A fennmaradó `r nrow(data_robust)` ország stabil alapot biztosít a következtetésekhez.
+
+# 8. Következtetések
+
+## Főbb megállapítások
+
+1. **Kapcsolat iránya**: `r ifelse(coef_estimate < 0, "Negatív", "Pozitív")` és statisztikailag szignifikáns kapcsolat van a vállalkozásindítási idő és az egy főre jutó GDP között.
+
+2. **Nagyságrend**: A `r round(coef_estimate, 3)` rugalmasság azt sugallja, hogy a vállalkozási bejegyzés hatékonysága értelmesen összefügg a gazdasági fejlettséggel.
+
+3. **Modell minősége**: A log-log specifikáció biztosítja a legjobb illeszkedést, ésszerű diagnosztikai tulajdonságokkal a befolyásos megfigyelések kezelése után.
+
+## Szakpolitikai vonatkozások
+
+A negatív kapcsolat azt sugallja, hogy a vállalkozásalapítás bürokratikus akadályainak csökkentése magasabb gazdasági prosperitással jár együtt. Azonban az okozati összefüggés nem állapítható meg ebből a keresztmetszeti elemzésből:
+
+- A magasabb GDP-vel rendelkező országok több forrással rendelkezhetnek a vállalkozási bejegyzés egyszerűsítésére
+- Mindkét változót közös tényezők hajthatják (intézmények, kormányzás stb.)
+- Hosszanti elemzésre lenne szükség az okozati hatások megállapításához
+
+## Korlátozások
+
+1. **Keresztmetszeti adatok**: Egyetlen időpont (2019) nem tudja megállapítani az okozati összefüggést vagy megvizsgálni az időbeli dinamikát
+2. **Elhagyott változók**: A GDP-t befolyásoló sok tényező nincs benne (oktatás, infrastruktúra, intézmények stb.)
+3. **Adatminőség**: A Világbank jelentéseire támaszkodik, amelyek országonként változhatnak
+4. **Modell specifikáció**: Bár a log-log a legjobb a tesztelt formák között, más nemlineáris specifikációk is megvizsgálhatók
+5. **Egyéves pillanatkép**: Az eredmények 2019-es feltételeket tükröznek, és nem feltétlenül általánosíthatók más időszakokra
+
+## Javaslatok a jövőbeli elemzéshez
+
+1. **Paneladatok elemzése**: Több év használata az időbeli országon belüli változások vizsgálatára és az országspecifikus fix hatások kontrollálására
+2. **Kontrollváltozók bevonása**: Oktatás, infrastruktúra, intézmények, politikai stabilitás stb. hozzáadása
+3. **Nemlineáris kapcsolatok**: Potenciális küszöbhatások vagy nem-monoton kapcsolatok vizsgálata
+4. **Regionális heterogenitás**: Annak tesztelése, hogy a kapcsolat eltér-e a földrajzi régiók vagy jövedelmi csoportok között
+5. **Instrumentális változók**: Az endogenitási problémák kezelése az okozati kapcsolatok jobb megállapításához
+6. **Idősorok**: Annak vizsgálata, hogy a vállalkozási szabályozás változásai megelőzik-e a GDP változásait
+
+---
+
+**Elemzés befejezve: `r Sys.Date()`**
+

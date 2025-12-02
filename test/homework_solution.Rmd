@@ -1,0 +1,577 @@
+---
+title: "Házifeladat: Nemfizetett háztartási munka elemzése"
+subtitle: "A társadalomtudomány alapjai - 4. hét"
+author: "Hallgató"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    theme: cosmo
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6
+)
+```
+
+# 1. Bevezetés
+
+## 1.1 A feladat célja
+
+A házifeladat célja a **nemek szerint megbontott termelési koreloszlások egyesítése** az ENSZ népességadatainak felhasználásával. Ez azt jelenti, hogy a férfiak és nők által végzett nemfizetett háztartási munka életkor szerinti eloszlásait kombináljuk, figyelembe véve a népesség nemek és életkor szerinti megoszlását.
+
+## 1.2 Felhasznált adatforrások
+
+1. **Counting Women's Work Database** (cww_database_PUBLIC_RELEASE_V3.0.xlsx)
+   - A nemfizetett háztartási munka időben és pénzben mért értékei
+   - Életkor és nem szerinti bontásban
+
+2. **ENSZ Népességi adatok** (UN Population Division)
+   - Népesség életkor és nem szerinti megoszlása
+   - Világnépesség-előrejelzés adatai
+
+# 2. Módszertan
+
+## 2.1 A probléma megközelítése
+
+A feladat megoldásához az alábbi lépéseket kell követni:
+
+### 2.1.1 Adatok betöltése és előkészítése
+
+Először be kell töltenünk mind a Counting Women's Work adatbázist, mind az ENSZ népességi adatokat. A CWW adatbázis tartalmazza a nemfizetett háztartási munka értékeit életkor és nem szerint, míg az ENSZ adatok megadják, hogy egy adott országban hány férfi és nő él az egyes korcsoportokban.
+
+### 2.1.2 A súlyozás logikája
+
+A két nem eloszlásának egyesítéséhez **súlyozott átlagot** kell számolnunk. A súlyok a népesség nemek szerinti megoszlásából származnak.
+
+**Matematikai képlet:**
+
+$$P_{combined}(a) = \frac{P_{female}(a) \times N_{female}(a) + P_{male}(a) \times N_{male}(a)}{N_{female}(a) + N_{male}(a)}$$
+
+Ahol:
+- $P_{combined}(a)$ = kombinált termelési érték az $a$ életkorban
+- $P_{female}(a)$ = női termelési érték az $a$ életkorban
+- $P_{male}(a)$ = férfi termelési érték az $a$ életkorban
+- $N_{female}(a)$ = nők száma az $a$ életkorban
+- $N_{male}(a)$ = férfiak száma az $a$ életkorban
+
+### 2.1.3 Miért van szükség súlyozásra?
+
+Ha egyszerűen átlagolnánk a férfi és női értékeket ($(P_{female} + P_{male})/2$), akkor azt feltételeznénk, hogy minden életkorban pontosan egyenlő számú férfi és nő van. Ez azonban nem igaz:
+
+- Fiatalabb korokban (0-40 év) általában **több fiú születik** (természetes arány kb. 105:100)
+- Idősebb korokban (70+ év) **több nő él**, mert a nők élettartama hosszabb
+
+A népességi súlyozás biztosítja, hogy a kombinált eloszlás **reálisan tükrözze a teljes népesség háztartási munka-termelését**, figyelembe véve a nemek tényleges arányát minden életkorban.
+
+## 2.2 Implementációs lépések
+
+1. **Adatbetöltés**: CWW Excel fájl és ENSZ népességi adatok beolvasása
+2. **Adattisztítás**: Hiányzó értékek kezelése, formátum-egységesítés
+3. **Életkori csoportok harmonizálása**: Biztosítani, hogy mindkét adatforrás ugyanazokat a korcsoportokat használja
+4. **Súlyozott kombinálás**: A fenti képlet alkalmazása minden életkorra
+5. **Vizualizáció**: Az eredmények grafikus megjelenítése
+6. **Értelmezés**: A kapott eloszlás összehasonlítása a nemi bontású eloszlásokkal
+
+# 3. Adatok betöltése
+
+```{r load-libraries}
+# Szükséges csomagok betöltése
+library(readxl)      # Excel fájlok olvasásához
+library(dplyr)       # Adatmanipulációhoz
+library(tidyr)       # Adatok átrendezéséhez
+library(ggplot2)     # Vizualizációhoz
+library(scales)      # Skálák formázásához
+```
+
+```{r load-cww-data}
+# Counting Women's Work adatbázis betöltése
+cww_file <- "cww_database_PUBLIC_RELEASE_V3.0.xlsx"
+
+# Ellenőrizzük, hogy létezik-e a fájl
+if (!file.exists(cww_file)) {
+  stop(paste("A fájl nem található:", cww_file))
+}
+
+# Lapok listájának lekérése
+sheet_names <- excel_sheets(cww_file)
+sheet_names
+
+# Az első néhány lap feltárása
+for (i in 1:min(3, length(sheet_names))) {
+  cat(sprintf("Lap %d: %s\n", i, sheet_names[i]))
+  df_sample <- read_excel(cww_file, sheet = i, n_max = 5)
+  print(head(df_sample, 3))
+}
+```
+
+```{r load-production-data}
+# Keressük meg a termelési adatokat tartalmazó lapot
+# A CWW adatbázisban általában külön lapok vannak a különböző változókra
+# (prod_time, prod_value, cons_time, cons_value stb.)
+
+# Releváns lapok azonosítása
+relevant_sheets <- sheet_names[grepl("prod|value|time", tolower(sheet_names))]
+
+# Releváns lapok információi
+if (length(relevant_sheets) > 0) {
+  for (sheet in relevant_sheets[1:min(3, length(relevant_sheets))]) {
+    temp_data <- read_excel(cww_file, sheet = sheet, n_max = 3)
+    cat(sprintf("\n%s (%d × %d):\n", sheet, nrow(temp_data), ncol(temp_data)))
+    print(temp_data)
+  }
+}
+
+# Most töltsük be az adatokat egy konkrét országra
+# Példa: Vietnam (VN) vagy bármely elérhető ország
+```
+
+# 4. ENSZ népességi adatok
+
+```{r un-population-data}
+# Az ENSZ népességi adatok általában CSV vagy TXT formátumban érhetők el
+# A https://population.un.org/wpp/Download/Standard/CSV/ oldalról letölthetők
+
+# Példa adatstruktúra létrehozása (valós adatok helyett)
+# Valós feladat esetén ezeket le kell tölteni az ENSZ oldaláról
+
+# Példa Vietnam népességére (2020, középső becslés)
+# Ezek az értékek csak példák - a valódi adatokat le kell tölteni!
+
+create_example_population <- function(country_code = "VN", year = 2020) {
+  # Példa népesség adatstruktúra
+  ages <- 0:99
+
+  # Példa népesség-eloszlás (ezek NEM valós adatok!)
+  # Fiatalabb korokban több férfi, idősebben több nő
+  males <- c(
+    rep(110000, 20),    # 0-19: fiatal korban több fiú
+    rep(105000, 20),    # 20-39: aktív korban közel egyenlő
+    rep(95000, 20),     # 40-59: középkorban csökkenő
+    rep(70000, 20),     # 60-79: idősebb korban kevesebb férfi
+    rep(30000, 20)      # 80-99: nagyon idős korban sokkal kevesebb
+  )
+
+  females <- c(
+    rep(100000, 20),    # 0-19: kevesebb lány születik
+    rep(105000, 20),    # 20-39: aktív korban közel egyenlő
+    rep(100000, 20),    # 40-59: középkorban stabil
+    rep(85000, 20),     # 60-79: idősebb korban több nő
+    rep(50000, 20)      # 80-99: nagyon idős korban sokkal több nő
+  )
+
+  population <- data.frame(
+    country = country_code,
+    year = year,
+    age = ages,
+    male = males,
+    female = females,
+    total = males + females
+  )
+
+  return(population)
+}
+
+# Példa népesség létrehozása
+un_population <- create_example_population("VN", 2020)
+
+head(un_population, 10)
+tail(un_population, 10)
+
+# Népesség megoszlása nemek között
+data.frame(
+  Kategória = c("Férfiak", "Nők", "Összesen", "Nők aránya"),
+  Érték = c(
+    format(sum(un_population$male), big.mark = " "),
+    format(sum(un_population$female), big.mark = " "),
+    format(sum(un_population$total), big.mark = " "),
+    sprintf("%.2f%%", 100 * sum(un_population$female) / sum(un_population$total))
+  )
+)
+```
+
+# 5. Példa adatok és kombinálás
+
+```{r create-example-data}
+# Mivel a valós CWW adatok struktúrája változó lehet,
+# készítsünk egy példa adatsetet a módszertan bemutatására
+
+# Példa termelési adatok (időben mérve, óra/nap)
+create_example_production <- function() {
+  ages <- 0:99
+
+  # Női háztartási munka életkor szerint (példa)
+  # Általános minta: alacsony gyermekkorban, magas 25-55 között, csökken nyugdíjkorban
+  female_prod <- c(
+    rep(0, 15),                          # 0-14: gyermekkor, nincs háztartási munka
+    seq(2, 5, length.out = 10),         # 15-24: növekvő
+    rep(5.5, 30),                        # 25-54: csúcsidőszak
+    seq(5.5, 3, length.out = 20),       # 55-74: csökkenő
+    seq(3, 1, length.out = 15)          # 75-89: tovább csökken
+  )
+
+  # Férfi háztartási munka életkor szerint (példa)
+  # Általában alacsonyabb szint, mint a nőknél
+  male_prod <- c(
+    rep(0, 15),                          # 0-14: gyermekkor
+    seq(0.5, 2, length.out = 10),       # 15-24: növekvő de alacsony
+    rep(2.2, 30),                        # 25-54: konstans, de alacsonyabb mint nőknél
+    seq(2.2, 2, length.out = 20),       # 55-74: kis csökkenés
+    seq(2, 0.8, length.out = 15)        # 75-89: csökken
+  )
+
+  # Kiegészítés 100 éves korig
+  female_prod <- c(female_prod, rep(0.5, 100 - length(female_prod)))
+  male_prod <- c(male_prod, rep(0.3, 100 - length(male_prod)))
+
+  production_data <- data.frame(
+    age = ages,
+    female_hours_per_day = female_prod,
+    male_hours_per_day = male_prod
+  )
+
+  return(production_data)
+}
+
+# Példa termelési adatok létrehozása
+production_data <- create_example_production()
+
+head(production_data, 15)
+production_data[40:50, ]
+tail(production_data, 10)
+```
+
+```{r visualize-gender-profiles}
+# Vizualizáljuk a nemi bontású termelési profilokat
+
+ggplot(production_data, aes(x = age)) +
+  geom_line(aes(y = female_hours_per_day, color = "Nők"), linewidth = 1.2) +
+  geom_line(aes(y = male_hours_per_day, color = "Férfiak"), linewidth = 1.2) +
+  scale_color_manual(values = c("Nők" = "#E74C3C", "Férfiak" = "#3498DB")) +
+  labs(
+    title = "Nemfizetett háztartási munka életkor szerint, nemek szerint",
+    subtitle = "Példa adatok - termelés (óra/nap)",
+    x = "Életkor (év)",
+    y = "Háztartási munka (óra/nap)",
+    color = "Nem"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "top",
+    plot.title = element_text(face = "bold", size = 14),
+    panel.grid.minor = element_blank()
+  )
+```
+
+# 6. Súlyozott kombinálás
+
+## 6.1 A kombinálás végrehajtása
+
+Most alkalmazzuk a súlyozott átlagolási módszert:
+
+```{r weighted-combination}
+# Kombináljuk az adatokat
+combined_data <- production_data %>%
+  left_join(un_population %>% select(age, male, female), by = "age") %>%
+  mutate(
+    # Súlyozott átlag számítása
+    combined_hours_per_day = (
+      female_hours_per_day * female + male_hours_per_day * male
+    ) / (female + male),
+
+    # Egyszerű átlag (nem súlyozott) - összehasonlításhoz
+    simple_average = (female_hours_per_day + male_hours_per_day) / 2,
+
+    # Különbség a két módszer között
+    difference = combined_hours_per_day - simple_average
+  )
+
+head(combined_data, 15)
+combined_data[40:50, ]
+tail(combined_data, 10)
+
+# Összesítő statisztikák
+data.frame(
+  Mutató = c("Nők átlagos", "Férfiak átlagos", "Kombinált (súlyozott)", "Egyszerű átlag", "Különbség"),
+  Óra_per_nap = c(
+    mean(production_data$female_hours_per_day),
+    mean(production_data$male_hours_per_day),
+    weighted.mean(combined_data$combined_hours_per_day,
+                  combined_data$female + combined_data$male),
+    mean(combined_data$simple_average),
+    weighted.mean(combined_data$combined_hours_per_day,
+                  combined_data$female + combined_data$male) -
+      mean(combined_data$simple_average)
+  )
+)
+```
+
+## 6.2 Vizualizáció: Mind a három eloszlás
+
+```{r visualize-all-three}
+# Hosszú formátumra alakítás a könnyebb ábrázoláshoz
+plot_data <- combined_data %>%
+  select(age, female_hours_per_day, male_hours_per_day, combined_hours_per_day) %>%
+  pivot_longer(
+    cols = c(female_hours_per_day, male_hours_per_day, combined_hours_per_day),
+    names_to = "category",
+    values_to = "hours"
+  ) %>%
+  mutate(
+    category = case_when(
+      category == "female_hours_per_day" ~ "Nők",
+      category == "male_hours_per_day" ~ "Férfiak",
+      category == "combined_hours_per_day" ~ "Kombinált (súlyozott)"
+    ),
+    category = factor(category, levels = c("Nők", "Férfiak", "Kombinált (súlyozott)"))
+  )
+
+ggplot(plot_data, aes(x = age, y = hours, color = category, linetype = category)) +
+  geom_line(linewidth = 1.1) +
+  scale_color_manual(
+    values = c("Nők" = "#E74C3C", "Férfiak" = "#3498DB", "Kombinált (súlyozott)" = "#2ECC71")
+  ) +
+  scale_linetype_manual(
+    values = c("Nők" = "solid", "Férfiak" = "solid", "Kombinált (súlyozott)" = "dashed")
+  ) +
+  labs(
+    title = "Nemfizetett háztartási munka: Nemi bontás és kombinált eloszlás",
+    subtitle = "A kombinált eloszlás népességi súlyokkal készült",
+    x = "Életkor (év)",
+    y = "Háztartási munka (óra/nap)",
+    color = NULL,
+    linetype = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "top",
+    plot.title = element_text(face = "bold", size = 14),
+    panel.grid.minor = element_blank()
+  )
+```
+
+## 6.3 A súlyozás hatása különböző életkorokban
+
+```{r weight-effect-visualization}
+# Népességi arányok nemek között
+weight_data <- combined_data %>%
+  mutate(
+    female_proportion = female / (female + male),
+    male_proportion = male / (female + male)
+  )
+
+# Két panel: népességi arány és a súlyozás hatása
+p1 <- ggplot(weight_data, aes(x = age)) +
+  geom_area(aes(y = female_proportion, fill = "Nők"), alpha = 0.6) +
+  geom_area(aes(y = -male_proportion, fill = "Férfiak"), alpha = 0.6) +
+  scale_fill_manual(values = c("Nők" = "#E74C3C", "Férfiak" = "#3498DB")) +
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.5) +
+  scale_y_continuous(labels = function(x) paste0(abs(x) * 100, "%")) +
+  labs(
+    title = "Népesség megoszlása nemek között",
+    x = "Életkor (év)",
+    y = "Népesség aránya",
+    fill = NULL
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "top")
+
+p2 <- ggplot(combined_data, aes(x = age)) +
+  geom_line(aes(y = difference), color = "#9B59B6", linewidth = 1) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(
+    title = "Súlyozott vs. nem súlyozott átlag különbsége",
+    x = "Életkor (év)",
+    y = "Különbség (óra/nap)"
+  ) +
+  theme_minimal(base_size = 11)
+
+# Kombinált ábra
+library(patchwork)
+p1 / p2 +
+  plot_annotation(
+    title = "A népességi súlyozás hatása a kombinált eloszlásra",
+    theme = theme(plot.title = element_text(face = "bold", size = 14))
+  )
+```
+
+# 7. Értelmezés és következtetések
+
+## 7.1 Főbb megfigyelések
+
+```{r key-observations}
+# Keressük meg a csúcsértékeket
+female_peak <- production_data %>%
+  filter(female_hours_per_day == max(female_hours_per_day)) %>%
+  slice(1)
+
+male_peak <- production_data %>%
+  filter(male_hours_per_day == max(male_hours_per_day)) %>%
+  slice(1)
+
+combined_peak <- combined_data %>%
+  filter(combined_hours_per_day == max(combined_hours_per_day)) %>%
+  slice(1)
+
+# Csúcsértékek táblázat
+data.frame(
+  Csoport = c("Nők", "Férfiak", "Kombinált"),
+  Maximum_óra_per_nap = c(
+    female_peak$female_hours_per_day,
+    male_peak$male_hours_per_day,
+    combined_peak$combined_hours_per_day
+  ),
+  Életkor = c(female_peak$age, male_peak$age, combined_peak$age)
+)
+
+# Teljes életúton végzett munka
+female_total <- sum(production_data$female_hours_per_day)
+male_total <- sum(production_data$male_hours_per_day)
+combined_total <- sum(combined_data$combined_hours_per_day)
+
+data.frame(
+  Csoport = c("Nők", "Férfiak", "Kombinált"),
+  Óra_összesen = c(female_total * 365, male_total * 365, combined_total * 365),
+  Nap_összesen = c(female_total, male_total, combined_total),
+  Év_összesen = c(female_total / 365, male_total / 365, combined_total / 365)
+)
+
+# Nemi különbségek
+female_work_total <- sum(production_data$female_hours_per_day * un_population$female)
+male_work_total <- sum(production_data$male_hours_per_day * un_population$male)
+
+data.frame(
+  Mutató = c("Nők/Férfiak arány", "Nők által végzett munka aránya (%)"),
+  Érték = c(
+    female_total / male_total,
+    100 * female_work_total / (female_work_total + male_work_total)
+  )
+)
+```
+
+## 7.2 Módszertani megfigyelések
+
+**1. A népességi súlyozás jelentősége:**
+
+- A súlyozott kombináció **reálisabban tükrözi** a teljes népesség háztartási munka-termelését
+- Különösen fontos idősebb korokban, ahol a nemek aránya jelentősen eltér
+- Az egyszerű átlagolás **alulbecsülné** a női háztartási munka jelentőségét idősebb korban
+
+**2. A súlyozás hatása életkoronként:**
+
+```{r age-specific-weight-effect}
+# Keressük meg, hol a legnagyobb a különbség
+max_diff_age <- combined_data %>%
+  filter(abs(difference) == max(abs(difference))) %>%
+  slice(1)
+
+data.frame(
+  Mutató = "Legnagyobb különbség",
+  Életkor = max_diff_age$age,
+  Különbség_óra = max_diff_age$difference
+)
+
+# Életkori csoportok szerinti összegzés
+combined_data %>%
+  mutate(
+    age_group = case_when(
+      age < 18 ~ "0-17: Gyermekkor",
+      age < 35 ~ "18-34: Fiatal felnőtt",
+      age < 55 ~ "35-54: Középkorú",
+      age < 70 ~ "55-69: Idősebb aktív",
+      TRUE ~ "70+: Időskor"
+    )
+  ) %>%
+  group_by(age_group) %>%
+  summarise(
+    Nők_átlag = mean(female_hours_per_day),
+    Férfiak_átlag = mean(male_hours_per_day),
+    Kombinált_átlag = mean(combined_hours_per_day),
+    Egyszerű_átlag = mean(simple_average),
+    Különbség = mean(difference),
+    .groups = "drop"
+  )
+```
+
+**3. Miért fontos ez a módszertan?**
+
+- **Gazdaságpolitikai szempontból**: A kombinált eloszlás pontosabb képet ad a teljes népesség háztartási munka-hozzájárulásáról, amely alapján GDP-korrekciókat lehet számolni
+- **Társadalmi egyenlőség szempontjából**: Világosan mutatja a nemi különbségeket és azok életkori mintázatát
+- **Demográfiai szempontból**: Figyelembe veszi a népesség szerkezetét, amely országonként és időben változik
+
+# 8. Továbbfejlesztési lehetőségek
+
+## 8.1 Valós adatok használata
+
+Ez a példa demonstrációs adatokkal készült. Valós kutatáshoz:
+
+1. **CWW adatbázisból** konkrét országot kiválasztani (pl. Vietnam, ahogy a feladatban szerepel)
+2. **ENSZ népességi adatok letöltése** az adott országra és évre
+3. **Időbeli változások** vizsgálata (pl. 2003 vs. 2010, ahogy a feladatban szerepel)
+
+## 8.2 További elemzések
+
+- **Több ország összehasonlítása**: Hogyan különböznek a minták fejlett vs. fejlődő országokban?
+- **Pénzben mért értékek**: A háztartási munka gazdasági értékének számítása
+- **Kohorsz-elemzés**: Ugyanazon korosztály követése időben
+- **Oktatási szint szerint**: Miként befolyásolja a végzettség a háztartási munka-mintázatot?
+
+## 8.3 Robusztusság-vizsgálat
+
+- **Érzékenység-elemzés**: Mi történik, ha más népességi előrejelzéseket használunk?
+- **Uncertainty quantification**: Konfidencia-intervallumok a becslésekhez
+- **Bootstrap módszerek**: A statisztikai szignifikancia ellenőrzésére
+
+# 9. Összefoglalás
+
+## 9.1 Tanulságok
+
+Ez a házifeladat bemutatja:
+
+1. **Hogyan kombináljunk nemi bontású adatokat népességi súlyozással**
+2. **Miért fontos a súlyozás** (nem egyenlő nemek aránya életkoronként)
+3. **Hogyan értelmezhető** a kombinált eloszlás a nemi bontású eloszlásokhoz képest
+4. **Milyen módszertani lépések** szükségesek egy ilyen elemzéshez
+
+## 9.2 A módszer alkalmazhatósága
+
+Ez a súlyozási módszer általánosan alkalmazható minden olyan helyzetben, amikor:
+
+- Van két (vagy több) alcsoport adatunk
+- Az alcsoportok mérete nem egyforma
+- Teljes népességre vonatkozó becslést akarunk készíteni
+
+Például:
+- **Regionális adatok** kombinálása országos szintre
+- **Különböző etnikai csoportok** adatainak összegzése
+- **Különböző foglalkozási csoportok** aggregálása
+
+## 9.3 Forráskód elérhetősége
+
+Ez a teljes RMarkdown dokumentum tartalmazza:
+- Az összes kódot az elemzés reprodukálásához
+- A módszertan részletes magyarázatát
+- Példa adatokat a logika bemutatásához
+
+Valós adatokkal való futtatáshoz csak a `create_example_production()` és `create_example_population()` függvényeket kell lecserélni valós adatforrásokra.
+
+---
+
+# Hivatkozások
+
+1. **Counting Women's Work Database**: https://www.countingwomenswork.org/
+2. **UN Population Division**: https://www.un.org/development/desa/pd/
+3. **Eurostat HETUS**: https://ec.europa.eu/eurostat/web/time-use-surveys
+4. **AGENTA Data Explorer**: http://dataexplorer.wittgensteincentre.org/nta/
+
+---
+
+*Készítve: `r Sys.Date()`*

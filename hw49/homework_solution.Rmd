@@ -1,0 +1,233 @@
+---
+title: "Házi feladat - Bérdiszkrimináció elemzése"
+author: "Megoldás"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Bevezetés
+
+A házi feladatban a vendégmunkásokkal szembeni bérdiszkriminációt elemezzük a morg-2014-emp.csv adattábla alapján.
+
+## Adatok betöltése és előkészítése
+
+```{r load-data}
+# Szükséges csomagok betöltése
+library(tidyverse)
+library(lmtest)
+library(sandwich)
+
+# Adatok betöltése
+data <- read_csv("morg-2014-emp.csv")
+
+# 1) Log órabér kiszámítása
+# Az órabért a heti keresetből (earnwke) és a heti órából (uhours) számoljuk
+data <- data %>%
+  mutate(
+    hourly_wage = earnwke / uhours,
+    ln_wage = log(hourly_wage)
+  )
+```
+
+## 2) Native változó létrehozása
+
+Tartjuk meg azokat, akik külföldön születtek és nem US állampolgárok VAGY USA-ban születtek.
+
+```{r create-native}
+data_filtered <- data %>%
+  filter(
+    (prcitshp == "Foreign Born, Not a US Citizen") |
+    (prcitshp == "Native, Born In US")
+  ) %>%
+  mutate(
+    native = ifelse(prcitshp == "Native, Born In US", 1, 0)
+  )
+```
+
+# Elemzés: Driver/sales workers and truck drivers (occ2012=9130)
+
+## 3) Native változó eloszlása
+
+```{r drivers-distribution}
+# Szűrés a driver kategóriára
+drivers <- data_filtered %>%
+  filter(occ2012 == 9130)
+
+# Eloszlás
+drivers %>%
+  group_by(native) %>%
+  summarise(
+    count = n(),
+    percentage = round(n() / nrow(drivers) * 100, 2)
+  )
+```
+
+## 4) T-teszt
+
+A két csoport (native vs foreign-born) log átlagbérének összehasonlítása:
+
+```{r t-test}
+# T-teszt a két csoport átlagbére között
+t.test(ln_wage ~ native, data = drivers, var.equal = FALSE)
+
+# Átlagok kiszámítása csoportonként
+drivers %>%
+  group_by(native) %>%
+  summarise(
+    mean_ln_wage = mean(ln_wage, na.rm = TRUE),
+    mean_wage = mean(hourly_wage, na.rm = TRUE),
+    n = n()
+  )
+```
+
+## 5) Regresszió robusztus standard hibákkal
+
+```{r regression-drivers}
+# Lineáris regresszió
+model_drivers <- lm(ln_wage ~ native, data = drivers)
+
+# Summary
+summary(model_drivers)
+
+# Robusztus standard hibák
+coeftest(model_drivers, vcov = vcovHC(model_drivers, type = "HC1"))
+
+# Konfidencia intervallum robusztus SE-vel
+coefci(model_drivers, vcov = vcovHC(model_drivers, type = "HC1"))
+```
+
+### Értelmezés
+
+- **α (konstans)**: `r round(coef(model_drivers)[1], 4)` - Ez a külföldön születettek átlagos log órabére
+- **β (native együttható)**: `r round(coef(model_drivers)[2], 4)` - Ez a bérkülönbség a native és foreign-born munkások között
+  - Az USA-ban születettek átlagosan `r round((exp(coef(model_drivers)[2]) - 1) * 100, 2)`%-kal többet keresnek
+- **R²**: `r round(summary(model_drivers)$r.squared, 4)` - A modell a bérek varianciájának `r round(summary(model_drivers)$r.squared * 100, 2)`%-át magyarázza
+
+## 6) T-teszt és regresszió kapcsolata
+
+```{r comparison}
+# Átlagok kinyerése
+avg_foreign <- mean(drivers$ln_wage[drivers$native == 0], na.rm = TRUE)
+avg_native <- mean(drivers$ln_wage[drivers$native == 1], na.rm = TRUE)
+
+# Összehasonlítás
+data.frame(
+  Módszer = c("T-teszt - Foreign átlag", "T-teszt - Native átlag", "T-teszt - Különbség",
+              "Regresszió - α (konstans)", "Regresszió - β (native)", "Regresszió - α + β"),
+  Érték = c(avg_foreign, avg_native, avg_native - avg_foreign,
+            coef(model_drivers)[1], coef(model_drivers)[2],
+            coef(model_drivers)[1] + coef(model_drivers)[2])
+)
+```
+
+### Kapcsolat magyarázata
+
+- **α (konstans) = Foreign-born csoport átlaga**
+- **β (native) = Native átlag - Foreign-born átlag = különbség**
+- **α + β = Native csoport átlaga**
+- **Az egyváltozós dummy regresszió ekvivalens a kétmintás t-teszttel!**
+
+# Külső érvényesség: Surveying and mapping technicians (occ2012=1560)
+
+## 7) Regresszió a második foglalkozási kategóriára
+
+```{r regression-surveyors}
+# Szűrés a surveying kategóriára
+surveyors <- data_filtered %>%
+  filter(occ2012 == 1560)
+
+# Mintaméret
+nrow(surveyors)
+
+# Lineáris regresszió
+model_surveyors <- lm(ln_wage ~ native, data = surveyors)
+
+# Summary
+summary(model_surveyors)
+
+# Robusztus standard hibák
+coeftest(model_surveyors, vcov = vcovHC(model_surveyors, type = "HC1"))
+
+# Konfidencia intervallum robusztus SE-vel
+coefci(model_surveyors, vcov = vcovHC(model_surveyors, type = "HC1"))
+```
+
+### Értelmezés
+
+- **α (konstans)**: `r round(coef(model_surveyors)[1], 4)`
+- **β (native együttható)**: `r round(coef(model_surveyors)[2], 4)` (százalékban: `r round((exp(coef(model_surveyors)[2]) - 1) * 100, 2)`%)
+- **R²**: `r round(summary(model_surveyors)$r.squared, 4)`
+
+## 8) Külső érvényesség értékelése
+
+```{r external-validity}
+# Béta együtthatók összehasonlítása
+data.frame(
+  Foglalkozás = c("Drivers", "Surveyors", "Különbség"),
+  Beta = c(coef(model_drivers)[2],
+           coef(model_surveyors)[2],
+           abs(coef(model_drivers)[2] - coef(model_surveyors)[2]))
+)
+```
+
+A két β `r ifelse(abs(coef(model_drivers)[2] - coef(model_surveyors)[2]) < 0.05, "közel hasonló, ami jó külső érvényességre utal. A bérdiszkrimináció hasonló mértékű a két foglalkozásban.", "jelentősen eltér, ami gyenge külső érvényességre utal. A bérdiszkrimináció mértéke függ a foglalkozási kategóriától.")`
+
+## 9) Melyik eredmény megbízhatóbb?
+
+```{r reliability}
+# Összehasonlító tábla
+data.frame(
+  Modell = c("Drivers", "Surveyors"),
+  Mintaméret = c(nrow(drivers), nrow(surveyors)),
+  R_squared = c(summary(model_drivers)$r.squared,
+                summary(model_surveyors)$r.squared),
+  Beta_p_value = c(
+    coeftest(model_drivers, vcov = vcovHC(model_drivers, type = "HC1"))[2, 4],
+    coeftest(model_surveyors, vcov = vcovHC(model_surveyors, type = "HC1"))[2, 4]
+  ),
+  CI_szélesség = c(
+    coefci(model_drivers, vcov = vcovHC(model_drivers, type = "HC1"))[2, 2] -
+      coefci(model_drivers, vcov = vcovHC(model_drivers, type = "HC1"))[2, 1],
+    coefci(model_surveyors, vcov = vcovHC(model_surveyors, type = "HC1"))[2, 2] -
+      coefci(model_surveyors, vcov = vcovHC(model_surveyors, type = "HC1"))[2, 1]
+  )
+)
+```
+
+### Értékelés
+
+**A drivers modell megbízhatóbb**, mert:
+
+- Sokkal nagyobb mintaméret (több megfigyelés)
+- Szűkebb konfidencia intervallum (pontosabb becslés)
+- Kisebb standard hibák
+- Statisztikailag szignifikánsabb eredmény
+
+## 10) Diszkrimináció vagy más tényezők?
+
+### Megfigyelt bérkülönbség
+
+A natív munkások átlagosan többet keresnek mindkét foglalkozásban.
+
+### Lehetséges magyarázatok
+
+1. **Valódi diszkrimináció** - munkaadók előnyben részesítik a natívokat
+
+2. **Kihagyott változók (omitted variable bias)**:
+   - Nyelvtudás: a natívok jobban beszélhetik az angolt
+   - Tapasztalat: külföldi tapasztalat nem feltétlenül számít
+   - Oktatás: iskolai végzettség különbségek
+   - Hálózati hatások: natívoknak jobb kapcsolataik lehetnek
+   - Földrajzi elhelyezkedés: külföldiek más régiókban dolgozhatnak
+
+### Következtetés
+
+Az egyváltozós regresszió **NEM tudja egyértelműen kimutatni a diszkriminációt**, mert nem kontrollál más releváns változókra. A megfigyelt bérkülönbség tartalmazhat valódi diszkriminációt ÉS produktivitásbeli különbségeket is. Többváltozós regresszióra lenne szükség a tisztább kép érdekében.
+
+# Összefoglalás
+
+Az elemzés kimutatta, hogy bérkülönbség létezik a natív és külföldi munkások között mindkét vizsgált foglalkozásban. Azonban az egyváltozós modell nem alkalmas a diszkrimináció egyértelmű kimutatására, mivel számos további tényező (nyelvtudás, tapasztalat, képzettség) is befolyásolhatja a béreket.
