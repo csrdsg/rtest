@@ -23,11 +23,11 @@ if (is.null(wb_data) || nrow(wb_data) == 0) {
 
 cat("Sikeres letoltes,", nrow(wb_data), "sor\n")
 
-final_data <- wb_data %>%
-  select(country, IT.NET.USER.ZS, SL.TLF.CACT.FE.ZS) %>%
+final_data <- wb_data |>
+  select(country, IT.NET.USER.ZS, SL.TLF.CACT.FE.ZS) |>
   rename(Country.Name = country,
          internet_usage = IT.NET.USER.ZS,
-         female_labor_force = SL.TLF.CACT.FE.ZS) %>%
+         female_labor_force = SL.TLF.CACT.FE.ZS) |>
   na.omit()
 
 cat("NA-k torlese utan:", nrow(final_data), "orszag maradt\n")
@@ -50,9 +50,9 @@ if (!file.exists("democracy-index-eiu.csv")) {
 democracy_data <- read_csv("democracy-index-eiu.csv", show_col_types = FALSE)
 cat("Demokracia index betoltve:", nrow(democracy_data), "sor\n")
 
-democracy_2022 <- democracy_data %>%
-  select(Entity, Year, `Democracy index`) %>%
-  filter(Year == 2022) %>%
+democracy_2022 <- democracy_data |>
+  select(Entity, Year, `Democracy index`) |>
+  filter(Year == 2022) |>
   rename(Country.Name = Entity)
 
 n_before <- nrow(final_data)
@@ -85,14 +85,14 @@ hdi_data <- read_csv("human-development-index.csv", show_col_types = FALSE)
 religion_data <- read_csv("religion.csv", show_col_types = FALSE)
 cat("HDI es vallas adatok betoltve\n")
 
-hdi_2022 <- hdi_data %>%
-  select(Entity, Year, `Human Development Index`) %>%
-  filter(Year == 2022) %>%
+hdi_2022 <- hdi_data |>
+  select(Entity, Year, `Human Development Index`) |>
+  filter(Year == 2022) |>
   rename(Country.Name = Entity)
 
-religion_2020 <- religion_data %>%
-  select(Country, Year, Christians, Muslims, Religiously_unaffiliated, Buddhists, Hindus, Jews) %>%
-  filter(Year == 2020) %>%
+religion_2020 <- religion_data |>
+  select(Country, Year, Christians, Muslims, Religiously_unaffiliated, Buddhists, Hindus, Jews) |>
+  filter(Year == 2020) |>
   rename(Country.Name = Country)
 
 n_before <- nrow(merged_data)
