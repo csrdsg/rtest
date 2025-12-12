@@ -6,6 +6,19 @@ library(car)  # VIF szamitashoz
 set.seed(42)
 cat("Script futtatasa:", Sys.time(), "\n\n")
 
+# === VALTOZOK KIVALASZTASA - GONDOLKODAS ===
+# KÉRDÉS: Mi lehet összefüggésben a női munkavállalással?
+#
+# HIPOTÉZIS 1: Az internet használat
+# MIÉRT? A digitalizáció megkönnyítheti a távmunkát, rugalmas munkavégzést
+# → Nőknek könnyebb összeegyeztetni családdal
+# → Vagy: fejlett országokban magas az internet ÉS változó a női foglalkoztatás?
+#
+# HIPOTÉZIS 2: Női munkaerő részvétel
+# Ez a FÜGGŐ változónk - ezt akarjuk megmagyarázni
+#
+# Kezdjük ezzel a két változóval, aztán bővítjük ha kell!
+
 # WDI api hivasa
 indicators <- c("IT.NET.USER.ZS", "SL.TLF.CACT.FE.ZS")
 
@@ -39,9 +52,27 @@ model1 <- lm(female_labor_force ~ internet_usage, data = final_data)
 
 summary(model1)
 
+# --- EREDMÉNY ÉRTÉKELÉSE ---
+# PROBLÉMA: Az internet használat NEM szignifikáns (p=0.397)
+# R² = 0.003 → szinte SEMMIT nem magyaráz!
+#
+# GONDOLKODÁS: Miért nem működik?
+# 1. Lehet hogy az internet önmagában túl egyszerű?
+# 2. Lehet hogy más tényezők fontosabbak?
+# 3. Lehet hogy KÖZVETETT hatás van? (internet → fejlettség → női munkavállalás)
+#
+# DÖNTÉS: Hozzáadok KONTROLL VÁLTOZÓKAT
+# → Így kiszűröm a zavaró hatásokat
+# → Tisztábban látom az igazi összefüggéseket
+
 # === DEMOKRACIA INDEX HOZZAADASA ===
-# A demokracia indexet hozzaadom mert a noi munkaero reszvetelez
-# osszefugghet a demokratikus jogokkal es szabadsagokkal
+# MIÉRT A DEMOKRÁCIA?
+# GONDOLAT: A demokratikus országokban:
+# → Több nőjogi mozgalom, egyenlőségi törvények
+# → Politikai szabadság → gazdasági szabadság is
+# → Oktatás, karrierlehetőségek nőknek
+#
+# ELVÁRÁS: Pozitív korreláció (több demokrácia = több női munkavállalás)
 
 if (!file.exists("democracy-index-eiu.csv")) {
   stop("Hiba: nem talalhato a democracy-index-eiu.csv file!")
@@ -66,13 +97,37 @@ test_model <- lm(female_labor_force ~ internet_usage + `Democracy index`,
                  data = merged_data)
 summary(test_model)
 
-# === TOVABBI KONTROLL VALTOZOK ===
-# A demokracia index szignifikans lett es javitotta a modellt
-# Most hozzaadom a Human Development Indexet es vallasi adatokat
+# --- EREDMÉNY ÉRTÉKELÉSE ---
+# SIKER! Most már MINDKÉT változó szignifikáns!
+# - Internet: p=0.0012 (!)
+# - Demokrácia: p=0.000015 (!!)
+# R² = 0.136 → 13.6%-ot magyaráz (sokkal jobb mint 0.3%!)
 #
-# HDI: az orszag fejlettsegi szintjet meghatarozza (egeszsegugy, oktatas, elettszinvonal)
-# Valllasok: a kulturalis hatternek hatasa lehet a noi munkaero reszvetelre
-# pl. egyes vallasok tradicionalisabb nemi szerepeket preferalhatnak
+# ÉRDEKES MEGFIGYELÉS: Az internet most NEGATÍV (-0.168)
+# MIÉRT? Amikor kontrollálunk a demokráciára, kiderül:
+# → Nem az internet OKOZZA a női munkavállalást
+# → Hanem mindkettő összefügg a fejlettséggel
+#
+# GONDOLKODÁS: Mi hiányzik még?
+# 1. Fejlettség explicit mérése (HDI)
+# 2. Kulturális tényezők (vallás)
+
+# === TOVABBI KONTROLL VALTOZOK ===
+#
+# MIÉRT HDI?
+# GONDOLAT: A Human Development Index átfogó fejlettségi mutató
+# → Egészségügy (anyák túlélése, gyermekvállalás biztonságosabb)
+# → Oktatás (iskolázott nők többet keresnek, többet dolgoznak)
+# → Életszínvonal (ha nincs szegénység, nem kell otthon maradni)
+# PROBLÉMA: Erősen korrelál az internettel (r=0.91!)
+# → De kontrolláljuk, hogy tisztán lássuk a hatását
+#
+# MIÉRT VALLÁS?
+# GONDOLAT: Kulturális normák fontosak!
+# → Keresztény hagyomány: vegyes (Skandinávia vs Dél-Európa)
+# → Muzulmán hagyomány: gyakran tradicionalisabb női szerepek
+# → Szekuláris országok: nincs vallási korlát
+# ELVÁRÁS: Vallástalan országokban magasabb női munkavállalás
 
 if (!file.exists("human-development-index.csv")) {
   stop("Hiba: nem talalhato a human-development-index.csv file!")
@@ -108,10 +163,15 @@ cat("Vallas join utan:", nrow(merged_data), "orszag (volt:", n_before, ")\n")
 merged_data <- mutate(merged_data, `Human Development Index` = 10 * `Human Development Index`)
 
 # ===== ADATOK FELTARASA =====
-# Mielott a vegleges modelleket futtatom, megvizsgalom az adatokat
-# Leiro statisztikak: atlag, median, min, max
-# Korrelacio: mennyire fuggnek ossze a valtozok
-# Grafikonok: vizualis kapcsolatok
+# GONDOLKODÁS: Mielőtt modellezek, meg kell érteni az adatokat!
+#
+# MIÉRT FONTOS EZ?
+# 1. Outlierek keresése (vannak-e extrém értékek?)
+# 2. Eloszlások vizsgálata (normális? ferde?)
+# 3. Korrelációk feltárása (multikollinearitás előrejelzése)
+# 4. Mintaméret ellenőrzése (elég nagy-e a minta?)
+#
+# DÖNTÉS: Leiro statisztikak, korrelacio matrix, grafikonok
 cat("\n=== LEIRO STATISZTIKAK ===\n")
 cat("Adatok szama a vegleges datasetben:", nrow(merged_data), "\n\n")
 
@@ -124,6 +184,12 @@ cat("\nKorrelacio matrix:\n")
 cor_matrix <- cor(select(merged_data, internet_usage, female_labor_force,
                          `Democracy index`, `Human Development Index`))
 print(round(cor_matrix, 3))
+
+# MEGFIGYELÉS a korrelációs mátrixból:
+# → Internet és HDI: r=0.91 (nagyon erős!)
+# → Ez MULTIKOLLINEARITÁST fog okozni
+# → De KELL mindkettő, mert különböző dolgokat mérnek
+# DÖNTÉS: Megtartjuk mindkettőt, de VIF-fel ellenőrizzük később
 
 # Vizualizaciok
 cat("\nGrafikonok keszitese...\n")
@@ -143,6 +209,20 @@ hist(merged_data$female_labor_force,
      col = "lightblue", breaks = 20)
 
 # === REGRESSZIOS MODELLEK ===
+#
+# STRATÉGIA: Tesztelek KÉT modellt
+# MIÉRT? Mert nem tudom ELŐRE, hogy a vallás fontos-e vagy sem
+#
+# GONDOLKODÁS:
+# Model2 (vallásokkal): Komplex, de lehet túl bonyolult?
+# → PRO: Kulturális tényezők fontosak lehetnek
+# → KONTRA: Több változó = nagyobb esély multikollinearitásra
+# → DÖNTÉS: Kipróbálom, aztán összehasonlítom
+#
+# Model3 (vallás nélkül): Egyszerűbb, kevesebb magyarázó erő?
+# → PRO: Kevesebb multikollinearitás, egyszerűbb értelmezés
+# → KONTRA: Ha a vallás FONTOS, akkor rossz modellt választunk
+# → DÖNTÉS: Ezt is futtatom, hogy lássam a különbséget
 
 # Model2: Teljes modell vallasi valtozokkal
 # Tesztelem hogy a vallasi hatter szignifikansan magyarazza-e a noi munkaero reszvetelt
@@ -156,18 +236,44 @@ model3 <- lm(female_labor_force ~ internet_usage + `Democracy index` +
              `Human Development Index`, data = merged_data)
 summary(model3)
 
-# === EREDMENYEK ERTELMEZESE ===
-# A vallasi valtozok SZIGNIFIKANSAK es JAVITJAK a modellt:
-# - Muslims: p = 0.049 (szignifikans 5%-on)
-# - Religiously_unaffiliated: p = 0.035 (szignifikans 5%-on)
-# - Model2 R² = 0.314 vs Model3 R² = 0.15 (duplaja!)
+# === EREDMENYEK ERTELMEZESE - DÖNTÉSHOZATAL ===
 #
-# KOVETKEZTETES: A vallasi hatter FONTOS prediktor
-# A muzulmán többségű országokban alacsonyabb a női munkavállalás (-0.106)
-# A vallástalan országokban magasabb (+0.196)
-# Ezert a VEGLEGES MODELL a Model2 (vallasokkal)
+# KÉRDÉS: Melyik modell a jobb?
+#
+# SZÁMOK ÖSSZEHASONLÍTÁSA:
+# Model2 (vallásokkal):    R² = 0.314, AIC = 1074
+# Model3 (vallás nélkül):  R² = 0.150, AIC = 1097
+#
+# DÖNTÉS: Model2 EGYÉRTELMŰEN JOBB!
+# MIÉRT?
+# 1. KÉTSZER akkora magyarázó erő (31% vs 15%)
+# 2. Alacsonyabb AIC (jobb illeszkedés)
+# 3. A vallási változók SZIGNIFIKÁNSAK:
+#    - Muslims: p = 0.049 ⭐
+#    - Religiously_unaffiliated: p = 0.035 ⭐
+#
+# TARTALMI ÉRTELMEZÉS:
+# → Muzulmán országokban: -0.106 (alacsonyabb női munkavállalás)
+#   MIÉRT? Kulturális normák, tradicionalisabb szerepek
+# → Szekuláris országokban: +0.196 (magasabb női munkavállalás)
+#   MIÉRT? Nincs vallási akadály, modernebbek
+#
+# KONKLÚZIÓ: A vallás NEM elhanyagolható!
+# A kulturális háttér ugyanolyan fontos mint a gazdasági fejlettség
+#
+# VÉGLEGES DÖNTÉS: Model2 (vallásokkal) a legjobb választás
 
 # ===== MODELL DIAGNOSZTIKA =====
+#
+# GONDOLKODÁS: Választottunk egy modellt, de MEGBÍZHATÓ-e?
+#
+# ELLENŐRIZNI KELL:
+# 1. Feltételezések teljesülnek-e? (normalitás, homoszkedaszticitás)
+# 2. Multikollinearitás mennyire súlyos? (VIF)
+# 3. Vannak-e outlierek/influensos pontok?
+#
+# DÖNTÉS: Futtatunk diagnosztikai teszteket
+# Ha a feltételezések NEM teljesülnek → a p-értékek megbízhatatlanok!
 cat("\n=== MODELL DIAGNOSZTIKA ===\n\n")
 
 # === MODELLEK OSSZEHASONLITASA ===
